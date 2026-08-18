@@ -1,0 +1,33 @@
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+// 呼叫 Claude，要求以純文字回傳（呼叫端自行決定是否解析 JSON）。
+async function callClaude({ system, prompt, maxTokens = 3000 }) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: maxTokens,
+      system,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error('Claude API 呼叫失敗：' + text);
+  }
+  const data = await res.json();
+  return data.content.map(b => b.text || '').join('\n');
+}
+
+// 從模型回應中取出 JSON（去除可能的 ```json 圍籬）。
+function parseJSON(text) {
+  const cleaned = text.replace(/```json|```/g, '').trim();
+  return JSON.parse(cleaned);
+}
+
+module.exports = { callClaude, parseJSON };

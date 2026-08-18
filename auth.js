@@ -1,0 +1,69 @@
+let client = null;
+let session = null;
+
+async function initAuth() {
+  const cfg = await fetch('/api/config').then(r => r.json());
+  if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
+    document.querySelector('#auth-status').textContent = '⚠ 尚未設定 Supabase 環境變數，請確認 Vercel 的 SUPABASE_URL / SUPABASE_ANON_KEY。';
+    return;
+  }
+  client = supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+  const { data: { session: s } } = await client.auth.getSession();
+  session = s;
+  client.auth.onAuthStateChange((_event, s) => { session = s; render(); });
+  render();
+  wireForm();
+}
+
+function render() {
+  const status = document.querySelector('#auth-status');
+  const signOutBtn = document.querySelector('#auth-signout');
+  const signInBtn = document.querySelector('#auth-signin');
+  const signUpBtn = document.querySelector('#auth-signup');
+  const composer = document.querySelector('#composer-panel');
+  const loggedIn = !!session;
+
+  status.textContent = loggedIn ? `已登入：${session.user.email}` : '尚未登入，請先登入或註冊帳號才能使用文案生成功能。';
+  signOutBtn.hidden = !loggedIn;
+  signInBtn.hidden = loggedIn;
+  signUpBtn.hidden = loggedIn;
+  document.querySelector('#auth-form input[name=email]').closest('label').style.display = loggedIn ? 'none' : '';
+  document.querySelector('#auth-form input[name=password]').closest('label').style.display = loggedIn ? 'none' : '';
+
+  // 未登入時鎖住整個文案工作台，避免呼叫 API 直接被 RLS 擋下來
+  composer.querySelectorAll('input, textarea, select, button').forEach(el => { el.disabled = !loggedIn; });
+}
+
+function wireForm() {
+  const form = document.querySelector('#auth-form');
+  const emailInput = form.querySelector('[name=email]');
+  const passwordInput = form.querySelector('[name=password]');
+  const status = document.querySelector('#auth-status');
+
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    status.textContent = '登入中…';
+    const { error } = await client.auth.signInWithPassword({ email: emailInput.value, password: passwordInput.value });
+    if (error) status.textContent = '⚠ ' + error.message;
+  });
+
+  document.querySelector('#auth-signup').addEventListener('click', async () => {
+    status.textContent = '註冊中…';
+    const { error } = await client.auth.signUp({ email: emailInput.value, password: passwordInput.value });
+    status.textContent = error ? '⚠ ' + error.message : '註冊成功，請查看信箱完成驗證後再登入。';
+  });
+
+  document.querySelector('#auth-signout').addEventListener('click', async () => {
+    await client.auth.signOut();
+  });
+}
+
+// app.js 透過這個函式取得目前登入者的 JWT，附加在每次 /api/* 呼叫的 Authorization 標頭
+window.getAccessToken = async function () {
+  if (!session) return null;
+  const { data: { session: fresh } } = await client.auth.getSession();
+  session = fresh;
+  return fresh ? fresh.access_token : null;
+};
+
+initAuth();
