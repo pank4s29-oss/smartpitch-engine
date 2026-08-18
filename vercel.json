@@ -7,7 +7,7 @@
       "maxDuration": 30
     },
     "api/domain-profiles/[id]/pain-points/suggest.js": {
-      "maxDuration": 30
+      "maxDuration": 45
     },
     "api/**/*.js": {
       "maxDuration": 30
