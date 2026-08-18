@@ -1,9 +1,9 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 // 2026/08 現行穩定版本；gemini-2.5-flash-lite 即將於 10 月停用，不要用它。
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-// 主模型撞到 429（頻率限制）／503（過載）時，最後改打這個備援模型；
-// 新模型剛上市常常比較容易滿載，用比較成熟的版本墊底。
-const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
+// 主模型撞到 429（頻率限制）／503（過載）時，最後改打這個備援模型。
+// 原本設 gemini-2.5-flash，但 Google 已將它下架（新申請的 key 打不到），改用官方目前推薦的 3.6。
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.6-flash';
 
 const RETRYABLE_STATUS = new Set([429, 503]);
 
@@ -48,6 +48,7 @@ async function extractText(res) {
 }
 
 // 呼叫 Gemini：429/503 這類暫時性錯誤會自動重試，最後一次改打備援模型。
+// 404（模型不存在或已下架）不重試，直接丟出，因為換模型也解決不了同一個模型的問題。
 // 介面（參數/回傳值）刻意對齊 anthropic.js 的 callClaude，方便切換。
 async function callGemini({ system, prompt, maxTokens = 3000 }) {
   if (!GEMINI_API_KEY) {
@@ -75,7 +76,7 @@ async function callGemini({ system, prompt, maxTokens = 3000 }) {
     const text = await res.text();
     lastErrorText = text;
     if (!RETRYABLE_STATUS.has(res.status)) {
-      // 非暫時性錯誤（例如金鑰無效、request 格式錯誤）不重試，直接丟出。
+      // 非暫時性錯誤（例如金鑰無效、模型不存在／已下架、request 格式錯誤）不重試，直接丟出。
       throw new Error('Gemini API 呼叫失敗：' + text);
     }
     // 429/503：繼續下一次嘗試
