@@ -2,6 +2,9 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
 // 呼叫 Claude，要求以純文字回傳（呼叫端自行決定是否解析 JSON）。
 async function callClaude({ system, prompt, maxTokens = 3000 }) {
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error('AI 生成功能目前尚未啟用（尚未設定 ANTHROPIC_API_KEY）。此為測試階段，之後要啟用時，到 Vercel 專案的 Environment Variables 補上這組金鑰並重新部署即可。');
+  }
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
