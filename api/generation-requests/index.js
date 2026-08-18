@@ -1,161 +1,146 @@
-const { getUserFromRequest, restRequest, sendError } = require('../_lib/supabase');
-const { call, parseJSON } = require('../_lib/provider');
-const { scanBlacklist, isSensitiveIndustry, hasVerbatimOverlap } = require('../_lib/compliance');
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SmartPitch Engine｜文案編輯台</title><link rel="stylesheet" href="/style.css"></head><body>
+<main>
 
-const LENGTH_MAP = { short: 100, medium: 220, long: 500 };
-const DEFAULT_BLOCK_ORDER = {
-  low: ['hook', 'pain_agitate', 'solution', 'urgency', 'cta'],
-  high: ['hook', 'solution', 'trust_proof', 'emotional_close', 'cta'],
-};
+<header>
+<div>
+<p class="eyebrow">SMARTPITCH ENGINE</p>
+<h1>把你對受眾的理解，排成一篇能直接刊登的文案。</h1>
+<p class="subtitle">先交出你最了解的受眾痛點與產品解方，系統依你設定的價位邏輯、語氣與情緒，整理成三組通過法遵審核的文案校樣。</p>
+</div>
+<span class="badge">文案編輯台</span>
+</header>
 
-module.exports = async (req, res) => {
-  const user = await getUserFromRequest(req);
-  if (!user) return sendError(res, 401, '請先登入。');
-  if (req.method !== 'POST') return sendError(res, 405, '不支援的方法。');
+<section class="composer" id="auth-panel">
+<div class="workflow-title"><span>身份確認</span><p>編輯台僅保存你自己的資料，需先登入。</p></div>
+<p id="auth-status">尚未登入，請先登入或註冊帳號才能使用文案生成功能。</p>
+<form id="auth-form">
+<div class="grid">
+<label>Email<input name="email" type="email" autocomplete="email" required></label>
+<label>密碼<input name="password" type="password" autocomplete="current-password" minlength="6" required></label>
+</div>
+<div class="auth-actions">
+<button id="auth-signin" type="submit">登入</button>
+<button id="auth-signup" type="button" class="secondary">註冊新帳號</button>
+<button id="auth-signout" type="button" class="secondary" hidden>登出</button>
+</div>
+</form>
+</section>
 
-  const body = req.body || {};
-  const {
-    profile_id, target_platform, product_name, product_description,
-    length_type, custom_word_count, tone, primary_emotion, secondary_emotions,
-    block_order, constraints,
-  } = body;
+<section class="composer" id="composer-panel">
+<form id="brief">
 
-  if (!profile_id || !product_name || !product_description) {
-    return sendError(res, 400, '缺少必要欄位（profile_id / product_name / product_description）。');
-  }
+<section class="form-step">
+<div class="step-heading">
+<b>01</b>
+<div><h2>基本資料</h2><p>讓系統理解產品、受眾與投放情境。</p></div>
+</div>
+<div class="grid">
+<label>產業／領域<input name="domain_tag" placeholder="例：健身、線上教育、保健食品" required></label>
+<label>目標受眾<input name="audience" placeholder="例：25–40 歲久坐上班族" required></label>
+<label>產品或服務名稱<input name="product_name" placeholder="例：14 天居家訓練計畫" required></label>
+<label>目標通路<select name="target_platform">
+<option value="facebook">Facebook 長文</option>
+<option value="threads">Threads 短篇</option>
+<option value="instagram">Instagram 貼文</option>
+<option value="google_rsa">Google RSA</option>
+</select></label>
+</div>
+<label>產品簡述<textarea name="product_description" required placeholder="它解決什麼問題？有何特色與可信依據？"></textarea></label>
+<fieldset><legend>價格帶</legend>
+<label class="choice"><input type="radio" name="price_tier" value="low" checked> 低單價／快速決策</label>
+<label class="choice"><input type="radio" name="price_tier" value="high"> 高客單／建立信任</label>
+</fieldset>
+</section>
 
-  try {
-    // 1. 驗證領域設定屬於使用者，並取得 price_tier / domain_tag / audience
-    const [profile] = await restRequest(`domain_profiles?id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
-    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+<section class="form-step pairs">
+<div class="step-heading">
+<b>02</b>
+<div><h2>痛點與解方</h2><p>這是生成最重要的依據；只會使用你確認過的內容。</p></div>
+<button id="suggest" type="button" class="secondary">取得建議草稿</button>
+</div>
+<div id="pair-list"></div>
+<button id="add-pair" type="button" class="secondary">＋ 新增一組配對</button>
+</section>
 
-    // 2. 取得已確認的痛點與解決方案配對
-    const painPoints = await restRequest(`audience_pain_points?domain_profile_id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
-    const solutions = await restRequest(`product_solutions?domain_profile_id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
-    if (!painPoints.length || !solutions.length) {
-      return sendError(res, 400, '請至少完成一組痛點與解決方案配對，再送出生成請求。');
-    }
-    const pairs = painPoints.map(p => {
-      const solution = solutions.find(s => s.pain_point_id === p.id);
-      return solution ? { ...p, ...solution } : null;
-    }).filter(Boolean);
+<details class="advanced" id="advanced">
+<summary><span>03</span><div><strong>進階調整（選填）</strong><small>設定篇幅、語氣、情緒與文案段落順序</small></div></summary>
+<div class="advanced-content">
+<div class="grid">
+<label>篇幅<select name="length_type">
+<option value="short">短（約 100 字）</option>
+<option value="medium" selected>中（約 220 字）</option>
+<option value="long">長（約 500 字）</option>
+<option value="custom">自訂</option>
+</select></label>
+<label>自訂字數（選自訂時）<input name="custom_word_count" type="number" min="50" max="1200" placeholder="例：350"></label>
+<label>語氣<input name="tone" value="親切口語" placeholder="例：專業權威、溫暖療癒"></label>
+<label>主要情緒<input name="primary_emotion" value="安全感" placeholder="例：成就感"></label>
+</div>
+<label>次要情緒（以逗號分隔）<input name="secondary_emotions" placeholder="例：渴望、歸屬感"></label>
+<fieldset><legend>文案區塊順序 · 可用上下箭頭排序，取消全部勾選即採系統建議</legend>
+<div id="blocks"></div>
+</fieldset>
+</div>
+</details>
 
-    // 3. 取得同領域的範例文案，作為「寫作手法」參考（不可逐字複製）
-    const swipeExamples = await restRequest(
-      `swipe_copies?user_id=eq.${user.id}&industry_tag=eq.${encodeURIComponent(profile.domain_tag)}&select=raw_content,block_breakdown,framework_tag&limit=3`
-    );
+<fieldset class="limits"><legend>執行限制（選填）</legend>
+<label class="choice"><input type="checkbox" name="constraints" value="不露臉行銷"> 不露臉行銷</label>
+<label class="choice"><input type="checkbox" name="constraints" value="純文字素材"> 純文字素材</label>
+<label class="choice"><input type="checkbox" name="constraints" value="不使用限時促銷"> 不使用限時促銷</label>
+</fieldset>
 
-    // 4. 決定框架（規則式，不需呼叫模型）
-    const framework = profile.price_tier === 'low'
-      ? { name: 'PAS', reason: '低單價／快速決策，採用 Problem-Agitate-Solution 強化立即痛點與立即行動。' }
-      : { name: 'AIDA', reason: '高客單／建立信任，採用 AIDA 強化信任累積與長期價值。' };
+<button id="submit" type="submit">生成 3 組文案 <span>→</span></button>
+</form>
+</section>
 
-    // 5. 決定篇幅與區塊順序
-    const targetLength = length_type === 'custom' ? (custom_word_count || 220) : (LENGTH_MAP[length_type] || 220);
-    const finalBlockOrder = (Array.isArray(block_order) && block_order.length)
-      ? block_order
-      : DEFAULT_BLOCK_ORDER[profile.price_tier];
+<section id="status" aria-live="polite"></section>
+<section id="result" hidden></section>
 
-    // 6. 組 Prompt，呼叫模型產出 3 組變體
-    const system = `你是資深廣告文案策略師。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
-生成規則：
-1. 每組文案依指定的區塊順序撰寫，每個區塊對應一小段內容。
-2. 若參考了下方的範例文案，只能學習其結構、修辭手法與節奏，絕對不可逐字複製其字句。
-3. 不得使用誇大不實或保證性字眼（如「保證有效」「穩賺不賠」「根治」等）。
-4. 全文字數需貼近目標字數，容許±20%誤差。`;
+<details class="composer swipe">
+<summary>
+<div><strong>範例文案資料庫</strong><small>貼入你看過表現好的廣告，建立內部的寫作手法參考庫</small></div>
+<span>展開</span>
+</summary>
+<div class="swipe-content">
+<p class="notice">僅供內部分析與寫作手法學習。請勿公開重製、轉售他人原創文案；系統生成新文案時不會逐字複製範例。</p>
+<form id="swipe-form">
+<label>範例廣告文字<textarea name="raw_content" required placeholder="貼上欲分析的廣告文案…"></textarea></label>
+<div class="grid">
+<label>來源連結（選填）<input name="source_url" placeholder="https://…"></label>
+<label>產業提示（選填）<input name="industry_tag" placeholder="例：健身"></label>
+</div>
+<button type="submit">分析並儲存</button>
+</form>
+<div id="swipe-status"></div>
+<div id="swipe-list"></div>
+</div>
+</details>
 
-    const prompt = `【領域】${profile.domain_tag}
-【目標受眾】${profile.audience}
-【產品/服務】${product_name}
-【產品說明】${product_description}
-【目標通路】${target_platform}
-【語氣】${tone}
-【主要情緒】${primary_emotion}
-【次要情緒】${(secondary_emotions || []).join('、') || '無'}
-【執行限制】${(constraints || []).join('、') || '無'}
-【目標字數】約 ${targetLength} 字
-【文案區塊順序】${finalBlockOrder.join(' → ')}
+</main>
 
-【受眾痛點與對應解決方案】
-${pairs.map((p, i) => `${i + 1}. 表層問題：${p.surface_problem}／深層渴望：${p.deep_desire}
-   解決方案：${p.solution_description}（賣點：${p.core_selling_point}${p.trust_proof ? '；信任背書：' + p.trust_proof : ''}）`).join('\n')}
+<template id="pair">
+<article class="pair">
+<button type="button" class="remove" aria-label="移除這組配對">×</button>
+<div class="pair-title">一組受眾洞察</div>
+<label>表層問題<input class="surface_problem" placeholder="例：下班太累，運動難以持續" required></label>
+<label>深層渴望<input class="deep_desire" placeholder="例：不犧牲生活也能維持健康" required></label>
+<label>核心賣點<input class="core_selling_point" placeholder="例：每天 15 分鐘可跟練" required></label>
+<label>如何解決這個痛點<textarea class="solution_description" required placeholder="具體說明產品如何對應此痛點"></textarea></label>
+<label>信任背書（選填）<input class="trust_proof" placeholder="例：由教練設計、已有 1,000 人完成"></label>
+</article>
+</template>
 
-【範例文案風格參考（僅供學習手法，不可逐字複製）】
-${swipeExamples.length ? swipeExamples.map((s, i) => `範例${i + 1}（框架：${s.framework_tag}）：${s.raw_content.slice(0, 200)}`).join('\n') : '（尚無範例文案）'}
+<template id="card">
+<article class="copy-card">
+<div class="card-top"><span class="angle"></span><button class="copy">複製</button></div>
+<h3></h3>
+<pre></pre>
+<div class="review"></div>
+<button class="adopt">標記為採用</button>
+</article>
+</template>
 
-請產出 3 組文案變體，角度分別為 fear（恐懼訴求）、aspiration（夢想訴求）、logic（邏輯說服）。
-輸出格式：
-{"variants":[
-  {"angle_type":"fear","title":"...","cta":"...","blocks":[{"type":"hook","content":"..."}, ...依區塊順序...]}
-  , ... 共3組
-]}`;
-
-    const raw = await call({ system, prompt, maxTokens: 4000 });
-    const parsed = parseJSON(raw);
-
-    // 7. 合規審核（規則式黑名單 + 逐字重複比對；AI 已在生成時被要求自我把關，此處為程式碼端的最後防線）
-    const swipeTexts = swipeExamples.map(s => s.raw_content);
-    const reviewedVariants = parsed.variants.map(v => {
-      const bodyText = v.blocks.map(b => b.content).join('\n');
-      const fullText = v.title + '\n' + bodyText;
-      const hits = scanBlacklist(fullText);
-      const overlap = hasVerbatimOverlap(bodyText, swipeTexts);
-      const sensitive = isSensitiveIndustry(profile.domain_tag);
-      const passed = hits.length === 0 && !overlap;
-      const needs_human_review = sensitive || hits.length > 0 || overlap;
-      let message = passed ? '已通過基礎法遵掃描。' : '未通過：';
-      if (hits.length) message += `命中禁用字詞（${hits.join('、')}）。`;
-      if (overlap) message += '偵測到與範例文案高度重複的段落。';
-      if (sensitive && passed) message += '（屬敏感產業，仍建議人工複核後再發布）';
-      return { ...v, body: bodyText, review: { passed, needs_human_review, message: message.trim() } };
-    });
-
-    // 8. 寫入資料庫
-    const strategy = {
-      step_2_framework: framework,
-      step_3_outline: { tone, primary_emotion, target_length: targetLength },
-      referenced_swipe_count: swipeExamples.length,
-    };
-
-    const [request] = await restRequest('generation_requests', {
-      method: 'POST',
-      prefer: 'return=representation',
-      body: {
-        user_id: user.id, domain_profile_id: profile_id, target_platform,
-        product_name, product_description, status: 'completed', strategy,
-      },
-    });
-
-    await restRequest('generation_params', {
-      method: 'POST',
-      body: {
-        user_id: user.id, request_id: request.id, length_type, custom_word_count: custom_word_count || null,
-        tone, primary_emotion, secondary_emotions: secondary_emotions || [], block_order: finalBlockOrder,
-      },
-    });
-
-    const savedVariants = [];
-    for (const v of reviewedVariants) {
-      const [variant] = await restRequest('copy_variants', {
-        method: 'POST',
-        prefer: 'return=representation',
-        body: {
-          user_id: user.id, request_id: request.id, angle_type: v.angle_type,
-          title: v.title, body: v.body, cta: v.cta, platform_format: target_platform,
-          block_order: v.blocks.map(b => b.type), review: v.review, adopted: false,
-        },
-      });
-      for (const b of v.blocks) {
-        await restRequest('copy_blocks', {
-          method: 'POST',
-          body: { user_id: user.id, copy_variant_id: variant.id, block_type: b.type, block_content: b.content, word_count: b.content.length },
-        });
-      }
-      savedVariants.push(variant);
-    }
-
-    return res.status(200).json({ id: request.id, status: 'completed', strategy, variants: savedVariants });
-  } catch (err) {
-    return sendError(res, 500, err.message);
-  }
-};
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/auth.js"></script>
+<script src="/app.js"></script>
+</body></html>
