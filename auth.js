@@ -2,9 +2,21 @@ let client = null;
 let session = null;
 
 async function initAuth() {
-  const cfg = await fetch('/api/config').then(r => r.json());
+  let cfg;
+  try {
+    const res = await fetch('/api/config');
+    if (!res.ok) throw new Error(`/api/config 回應 ${res.status}，請確認 api/config.js 是否放在正確路徑並已部署。`);
+    cfg = await res.json();
+  } catch (err) {
+    document.querySelector('#auth-status').textContent = '⚠ 無法讀取系統設定：' + err.message;
+    return;
+  }
   if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
     document.querySelector('#auth-status').textContent = '⚠ 尚未設定 Supabase 環境變數，請確認 Vercel 的 SUPABASE_URL / SUPABASE_ANON_KEY。';
+    return;
+  }
+  if (typeof supabase === 'undefined') {
+    document.querySelector('#auth-status').textContent = '⚠ 找不到 Supabase JS SDK，請確認 index.html 有正確載入 CDN script。';
     return;
   }
   client = supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
