@@ -72,7 +72,6 @@
   }
 
   // app.js 透過這個函式取得目前登入者的 JWT，附加在每次 /api/* 呼叫的 Authorization 標頭。
-  // 這是唯一刻意外洩到全域的東西，其餘變數/函式都被包在這個 IIFE 裡，不會跟 app.js 的全域命名衝突。
   window.getAccessToken = async function () {
     if (!session) return null;
     const { data: { session: fresh } } = await client.auth.getSession();
@@ -80,5 +79,7 @@
     return fresh ? fresh.access_token : null;
   };
 
-  initAuth();
+  // 讓其他腳本（app.js）可以 await 這個 promise，確保「登入狀態已確認完成」再打
+  // 需要驗證身份的 API，避免網頁一載入就搶在驗證完成前呼叫、被誤判成未登入。
+  window.authReady = initAuth();
 })();
