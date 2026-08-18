@@ -7,11 +7,13 @@ const DEFAULT_BLOCK_ORDER = {
   low: ['hook', 'pain_agitate', 'solution', 'urgency', 'cta'],
   high: ['hook', 'solution', 'trust_proof', 'emotional_close', 'cta'],
 };
-// 原本是 4000。要一次產出 3 組完整多區塊文案（篇幅選「長」時中文內容加總可能上看 1500 字），
-// 加上 JSON 結構本身的巢狀開銷，再加上 Gemini 3.x 就算 thinking level 是 LOW 仍會消耗一部分
-// maxOutputTokens 額度，4000 很容易在輸出還沒寫完前就被截斷（finishReason: MAX_TOKENS），
-// 導致 parseJSON 對著不完整的 JSON 失敗、丟出看不出原因的 500。提高額度給足夠的緩衝。
+// 要一次產出 3 組完整多區塊文案（篇幅選「長」時中文內容加總可能上看 1500 字），加上 JSON
+// 結構本身的巢狀開銷，再加上 Gemini 3.x 就算 thinking level 是 LOW 仍會消耗一部分
+// maxOutputTokens 額度，給足夠的緩衝避免輸出被截斷。
 const GENERATION_MAX_TOKENS = Number(process.env.GENERATION_MAX_TOKENS || 8000);
+// vercel.json 裡這支的 maxDuration 是 60 秒，扣掉讀 profile／痛點／解決方案／範例文案
+// （約 4 次查詢）與最後 2 次批次寫入的開銷，留給 AI 呼叫（含重試與跨供應商備援）的預算抓 50 秒。
+const AI_BUDGET_MS = Number(process.env.GENERATION_AI_BUDGET_MS || 50000);
 
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
@@ -98,7 +100,7 @@ ${swipeExamples.length ? swipeExamples.map((s, i) => `範例${i + 1}（框架：
   , ... 共3組
 ]}`;
 
-    const raw = await call({ system, prompt, maxTokens: GENERATION_MAX_TOKENS });
+    const raw = await call({ system, prompt, maxTokens: GENERATION_MAX_TOKENS, budgetMs: AI_BUDGET_MS });
     const parsed = parseJSON(raw);
     if (!parsed || !Array.isArray(parsed.variants) || !parsed.variants.length) {
       throw new Error('模型回應格式不符預期（缺少 variants 陣列），請稍後再試一次。');
@@ -145,9 +147,7 @@ ${swipeExamples.length ? swipeExamples.map((s, i) => `範例${i + 1}（框架：
       },
     });
 
-    // 原本這裡是「for 每個 variant → await 建立 → for 每個 block → await 建立」的雙層序列迴圈，
-    // 3 組文案、每組 5~7 個區塊時等於 15~21 次序列的 Supabase REST 往返，時間會直接疊加在
-    // 這支函式的 maxDuration 預算裡。PostgREST 原生支援陣列批次寫入，改成 2 次請求即可。
+    // 批次寫入，取代原本 15~21 次序列的 Supabase REST 往返。
     const variantRows = reviewedVariants.map(v => ({
       user_id: user.id, request_id: request.id, angle_type: v.angle_type,
       title: v.title, body: v.body, cta: v.cta, platform_format: target_platform,
