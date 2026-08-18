@@ -1,7 +1,8 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/generation-requests/index.js": { "maxDuration": 60 },
-    "api/swipe-copies/index.js": { "maxDuration": 30 },
-    "api/domain-profiles/[id]/pain-points/suggest.js": { "maxDuration": 30 }
+    "api/**/*.js": {
+      "maxDuration": 30
+    }
   }
 }
