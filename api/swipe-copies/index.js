@@ -1,6 +1,9 @@
 const { getUserFromRequest, restRequest, sendError } = require('../_lib/supabase');
 const { call, parseJSON } = require('../_lib/provider');
 
+// vercel.json 裡這支的 maxDuration 是 30 秒，扣掉寫入 swipe_copies 的開銷，留給 AI 呼叫抓 25 秒。
+const AI_BUDGET_MS = Number(process.env.SWIPE_AI_BUDGET_MS || 25000);
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
@@ -26,7 +29,7 @@ ${raw_content}
 
 輸出格式：{"industry_tag":"...","framework_tag":"...","emotion_tags":["..."],"angle_type":"...","block_breakdown":["..."]}`;
 
-      const raw = await call({ system, prompt, maxTokens: 500 });
+      const raw = await call({ system, prompt, maxTokens: 500, budgetMs: AI_BUDGET_MS });
       const classified = parseJSON(raw);
 
       const [saved] = await restRequest('swipe_copies', {
