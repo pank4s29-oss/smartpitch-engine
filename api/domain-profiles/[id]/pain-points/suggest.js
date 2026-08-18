@@ -1,6 +1,10 @@
 const { getUserFromRequest, restRequest, sendError } = require('../../../_lib/supabase');
 const { call, parseJSON } = require('../../../_lib/provider');
 
+// vercel.json 裡這支的 maxDuration 是 45 秒，扣掉讀 domain_profiles 與收尾處理的開銷，
+// 留給 AI 呼叫（含重試與跨供應商備援）的預算抓 40 秒。
+const AI_BUDGET_MS = Number(process.env.SUGGEST_AI_BUDGET_MS || 40000);
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
@@ -20,7 +24,7 @@ module.exports = async (req, res) => {
 請提出 3 組該受眾常見的痛點草稿，每組包含 surface_problem（表層問題，一句話）與 deep_desire（背後的深層渴望，一句話）。
 輸出格式：[{"surface_problem":"...","deep_desire":"..."}, ...]`;
 
-    const raw = await call({ system, prompt, maxTokens: 800 });
+    const raw = await call({ system, prompt, maxTokens: 800, budgetMs: AI_BUDGET_MS });
     const suggestions = parseJSON(raw);
     return res.status(200).json(suggestions);
   } catch (err) {
