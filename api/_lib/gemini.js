@@ -13,22 +13,33 @@ const THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'LOW';
 
 // 沒有呼叫端明確傳入 budgetMs 時的保守預設值。
 const DEFAULT_BUDGET_MS = Number(process.env.GEMINI_DEFAULT_BUDGET_MS || 25000);
-// 單次嘗試 timeout 的下限／上限。
+
+// ── 修正重點 1 ────────────────────────────────────────────────────────
+// 舊版 computeAttemptTimeout 用「maxTokens * MS_PER_TOKEN」估算單次該等多久，
+// 對 maxTokens 較小的請求（例如 suggest.js 的 800）估出來的值遠低於
+// MIN_ATTEMPT_TIMEOUT_MS，於是永遠被下限鎖死在 12000ms——即使呼叫端傳進來的
+// budgetMs 明明還有 40 秒空間，也完全沒被拿來延長單次等待時間。
+// 而 Google 官方目前處於高負載狀態，正常回應可能要 10~20 幾秒，用 12 秒去等，
+// 幾乎注定會在 Gemini 真正回應之前就先被我們自己 abort 掉。
+//
+// 新做法：單次逾時改成「剩餘預算 ÷ 剩餘嘗試次數」（fair share），並取
+// token 估算值與 fair share 兩者中較大的一個，確保只要預算夠，每次嘗試
+// 都會拿到接近「這次呼叫剩餘時間允許的最大值」，而不是被一個跟 budget
+// 無關的下限卡死。
 const MIN_ATTEMPT_TIMEOUT_MS = 12000;
 const MAX_ATTEMPT_TIMEOUT_MS = 35000;
-const MS_PER_TOKEN = 4; // 粗估：maxTokens * 4ms 作為單次嘗試該給的基準時間
+const MS_PER_TOKEN = 4; // 粗估：maxTokens * 4ms 作為單次嘗試該給的基準時間下限
 
-// ── 修正重點 ──────────────────────────────────────────────────────────
-// 舊版做法：Gemini 三次嘗試（含重試間隔）把 budgetMs「用剩多少算多少」，
-// 最後才檢查剩餘時間夠不夠 4 秒去試 Claude。
-// 問題：3 次 12000ms 的嘗試 + 兩次重試間隔（800+1500ms）加起來就接近 38 秒，
-// 在 40 秒的總預算下，Gemini 自己幾乎榨乾了全部時間，導致跨供應商備援
-// 「理論上有機會用，但實際上永遠輪不到」——這正是你這次遇到的狀況。
-//
-// 新版做法：一開始就把一段固定的時間保留給 Claude 備援（前提是有設定
-// ANTHROPIC_API_KEY），Gemini 的重試迴圈只能使用「總預算 - 保留額度」，
-// 保證備援一定有真正可用、足夠讓 Claude 完成一次呼叫的時間，而不是
-// 撿 Gemini 用剩的零頭。
+// ── 修正重點 2 ────────────────────────────────────────────────────────
+// 目前沒有接 ANTHROPIC_API_KEY 跨供應商備援，完全靠 Gemini 自己扛。
+// 在同一個過載的主模型上重試兩次，不如把預算分給主模型與備援模型各一次、
+// 但每次都給足夠長的等待時間——兩個不同模型各試一次夠久的機會，
+// 通常比同一個模型試兩次太短的機會更容易成功。
+const PLAN = [
+  { model: GEMINI_MODEL, delayBefore: 0 },
+  { model: GEMINI_FALLBACK_MODEL, delayBefore: 1000 },
+];
+
 const FALLBACK_RESERVE_RATIO = 0.3;
 const FALLBACK_RESERVE_MIN_MS = 6000;
 const FALLBACK_RESERVE_MAX_MS = 15000;
@@ -134,10 +145,14 @@ async function extractText(res) {
   return text;
 }
 
-function computeAttemptTimeout(maxTokens, remainingBudgetMs) {
-  const base = Math.min(Math.max(maxTokens * MS_PER_TOKEN, MIN_ATTEMPT_TIMEOUT_MS), MAX_ATTEMPT_TIMEOUT_MS);
-  // 留 500ms 安全邊界給後續處理（例如把結果轉成文字、丟回呼叫端）。
-  return Math.max(2000, Math.min(base, remainingBudgetMs - 500));
+// 單次嘗試該給多久：token 估算值（下限用）與「剩餘預算平均分給剩餘嘗試次數」
+// 兩者取較大值，確保只要預算夠，就不會被一個跟 budget 無關的下限卡死。
+function computeAttemptTimeout(maxTokens, remainingBudgetMs, attemptsLeft) {
+  const tokenBased = Math.min(Math.max(maxTokens * MS_PER_TOKEN, MIN_ATTEMPT_TIMEOUT_MS), MAX_ATTEMPT_TIMEOUT_MS);
+  const usableBudget = Math.max(0, remainingBudgetMs - 500); // 留 500ms 安全邊界給後續處理
+  const fairShare = Math.floor(usableBudget / Math.max(1, attemptsLeft));
+  const timeout = Math.min(MAX_ATTEMPT_TIMEOUT_MS, Math.max(tokenBased, fairShare));
+  return Math.max(2000, Math.min(timeout, usableBudget));
 }
 
 // 依總預算與是否有跨供應商備援可用，算出這次要保留給 Claude 的時間。
@@ -151,9 +166,6 @@ function computeFallbackReserve(totalBudget) {
 // 呼叫 Gemini：429/503（含 body 內對應的 error.code / error.status）與逾時都視為暫時性錯誤會自動重試。
 // budgetMs：這次呼叫（含所有重試與跨供應商備援）總共能花多少時間，由呼叫端依自己在 vercel.json
 // 設定的 maxDuration 減去其他開銷（讀寫資料庫等）後算出，避免整體耗時超過函式的執行時限。
-//
-// 重點修正：Gemini 自己的重試迴圈只會使用「總預算 - 保留給 Claude 的額度」，
-// 不會像舊版一樣把整個 budgetMs 都花在 Gemini 上，導致備援永遠沒有真正可用的時間。
 async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
   if (!GEMINI_API_KEY) {
     throw new Error('AI 生成功能目前尚未啟用（尚未設定 GEMINI_API_KEY）。此為測試階段，之後要啟用時，到 Vercel 專案的 Environment Variables 補上這組金鑰並重新部署即可。');
@@ -164,17 +176,13 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
   const geminiBudget = totalBudget - fallbackReserve;
 
   const start = Date.now();
-  const plan = [
-    { model: GEMINI_MODEL, delayBefore: 0 },
-    { model: GEMINI_MODEL, delayBefore: 800 },
-    { model: GEMINI_FALLBACK_MODEL, delayBefore: 1500 },
-  ];
 
   let lastErrorText = '';
-  for (let i = 0; i < plan.length; i++) {
-    const { model, delayBefore } = plan[i];
+  for (let i = 0; i < PLAN.length; i++) {
+    const { model, delayBefore } = PLAN[i];
+    const attemptsLeft = PLAN.length - i;
 
-    // 注意：這裡用 geminiBudget（已扣掉保留額度），不是 totalBudget。
+    // 注意：這裡用 geminiBudget（已扣掉保留給 Claude 的額度），不是 totalBudget。
     let remaining = geminiBudget - (Date.now() - start);
     if (remaining < 3000) break; // 剩餘的 Gemini 額度太少，再嘗試也只會被強制中斷，不值得
 
@@ -184,7 +192,7 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
       if (remaining < 3000) break;
     }
 
-    const attemptTimeout = computeAttemptTimeout(maxTokens, remaining);
+    const attemptTimeout = computeAttemptTimeout(maxTokens, remaining, attemptsLeft);
 
     let res;
     try {
