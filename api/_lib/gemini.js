@@ -2,8 +2,14 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 // 2026/08 現行穩定版本；gemini-2.5-flash-lite 即將於 10 月停用，不要用它。
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
 // 主模型撞到 429（頻率限制）／503（過載）時，最後改打這個備援模型。
-// 原本設 gemini-2.5-flash，但 Google 已將它下架（新申請的 key 打不到），改用官方目前推薦的 3.6。
+// gemini-2.5-flash 已被 Google 下架（新申請的 key 打不到），改用官方目前推薦的 3.6。
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.6-flash';
+
+// Gemini 3.x 系列預設會先做一段「思考」再輸出，thinking 會吃掉 maxOutputTokens 的額度。
+// 我們這三個呼叫情境（建議草稿／文案生成／範例文案分類）都是照格式輸出結構化 JSON，
+// 不需要深度推理，把 thinking 壓到最低，把 token 額度留給真正要的輸出。
+// 注意：gemini-3.7-flash 不支援 MINIMAL，只能用 LOW/MEDIUM/HIGH；LOW 是目前所有 3.x 模型都支援的最低值。
+const THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'LOW';
 
 const RETRYABLE_STATUS = new Set([429, 503]);
 
@@ -23,7 +29,11 @@ async function requestGemini(model, { system, prompt, maxTokens }) {
       body: JSON.stringify({
         system_instruction: system ? { parts: [{ text: system }] } : undefined,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: maxTokens, responseMimeType: 'application/json' },
+        generationConfig: {
+          maxOutputTokens: maxTokens,
+          responseMimeType: 'application/json',
+          thinkingConfig: { thinkingLevel: THINKING_LEVEL },
+        },
         safetySettings: SAFETY_SETTINGS,
       }),
     }
@@ -38,13 +48,25 @@ async function extractText(res) {
     throw new Error('Gemini 未回傳內容' + (reason ? `（被安全過濾擋下：${reason}）` : '：' + JSON.stringify(data)));
   }
   const candidate = data.candidates[0];
-  if (candidate.finishReason === 'MAX_TOKENS') {
-    console.warn('Gemini 回應因 maxOutputTokens 被截斷，內容可能不完整（JSON.parse 稍後可能會失敗）。');
-  } else if (candidate.finishReason === 'SAFETY') {
+  if (candidate.finishReason === 'SAFETY') {
     throw new Error('Gemini 回應被安全過濾擋下（finishReason: SAFETY）。');
   }
+
   const parts = (candidate.content && candidate.content.parts) || [];
-  return parts.map(p => p.text || '').join('\n');
+  const text = parts.map(p => p.text || '').join('\n');
+
+  if (!text.trim()) {
+    // 通常是 maxOutputTokens 額度被 thinking 佔滿，或本身被截斷成空字串。
+    // 明確丟錯，避免呼叫端把空字串丟給 JSON.parse 產生看不懂的「Unexpected end of JSON input」。
+    throw new Error(
+      `Gemini 回應內容為空（finishReason: ${candidate.finishReason || '未知'}）。` +
+      '常見原因是 maxOutputTokens 額度被思考過程用完，可提高呼叫時的 maxTokens 再試一次。'
+    );
+  }
+  if (candidate.finishReason === 'MAX_TOKENS') {
+    console.warn('Gemini 回應因 maxOutputTokens 被截斷，內容可能不完整（JSON.parse 稍後可能會失敗）。');
+  }
+  return text;
 }
 
 // 呼叫 Gemini：429/503 這類暫時性錯誤會自動重試，最後一次改打備援模型。
