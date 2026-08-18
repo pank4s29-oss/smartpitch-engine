@@ -13,13 +13,26 @@ const THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'LOW';
 
 // 沒有呼叫端明確傳入 budgetMs 時的保守預設值。
 const DEFAULT_BUDGET_MS = Number(process.env.GEMINI_DEFAULT_BUDGET_MS || 25000);
-// 單次嘗試 timeout 的下限／上限。maxTokens 越大，允許的單次等待時間越長，
-// 但絕對不會超過「目前剩餘的總預算」——這是這次修正的重點：
-// 上一版固定 8 秒，對 800 tokens 的小請求可能還夠，對 8000 tokens 的大請求則完全不合理，
-// 而且沒考慮到 Google 目前正處於官方公告的「高負載」狀態，正常回應本來就可能要 10~20 幾秒。
+// 單次嘗試 timeout 的下限／上限。
 const MIN_ATTEMPT_TIMEOUT_MS = 12000;
 const MAX_ATTEMPT_TIMEOUT_MS = 35000;
 const MS_PER_TOKEN = 4; // 粗估：maxTokens * 4ms 作為單次嘗試該給的基準時間
+
+// ── 修正重點 ──────────────────────────────────────────────────────────
+// 舊版做法：Gemini 三次嘗試（含重試間隔）把 budgetMs「用剩多少算多少」，
+// 最後才檢查剩餘時間夠不夠 4 秒去試 Claude。
+// 問題：3 次 12000ms 的嘗試 + 兩次重試間隔（800+1500ms）加起來就接近 38 秒，
+// 在 40 秒的總預算下，Gemini 自己幾乎榨乾了全部時間，導致跨供應商備援
+// 「理論上有機會用，但實際上永遠輪不到」——這正是你這次遇到的狀況。
+//
+// 新版做法：一開始就把一段固定的時間保留給 Claude 備援（前提是有設定
+// ANTHROPIC_API_KEY），Gemini 的重試迴圈只能使用「總預算 - 保留額度」，
+// 保證備援一定有真正可用、足夠讓 Claude 完成一次呼叫的時間，而不是
+// 撿 Gemini 用剩的零頭。
+const FALLBACK_RESERVE_RATIO = 0.3;
+const FALLBACK_RESERVE_MIN_MS = 6000;
+const FALLBACK_RESERVE_MAX_MS = 15000;
+// ──────────────────────────────────────────────────────────────────────
 
 // HTTP 傳輸層狀態碼視為可重試。
 const RETRYABLE_STATUS = new Set([429, 503]);
@@ -127,19 +140,29 @@ function computeAttemptTimeout(maxTokens, remainingBudgetMs) {
   return Math.max(2000, Math.min(base, remainingBudgetMs - 500));
 }
 
+// 依總預算與是否有跨供應商備援可用，算出這次要保留給 Claude 的時間。
+// 沒有設定 ANTHROPIC_API_KEY 就不用保留，把整個預算讓給 Gemini 重試。
+function computeFallbackReserve(totalBudget) {
+  if (!process.env.ANTHROPIC_API_KEY) return 0;
+  const target = totalBudget * FALLBACK_RESERVE_RATIO;
+  return Math.min(FALLBACK_RESERVE_MAX_MS, Math.max(FALLBACK_RESERVE_MIN_MS, target));
+}
+
 // 呼叫 Gemini：429/503（含 body 內對應的 error.code / error.status）與逾時都視為暫時性錯誤會自動重試。
 // budgetMs：這次呼叫（含所有重試與跨供應商備援）總共能花多少時間，由呼叫端依自己在 vercel.json
 // 設定的 maxDuration 減去其他開銷（讀寫資料庫等）後算出，避免整體耗時超過函式的執行時限。
-// 每次嘗試的 timeout 會依 maxTokens 動態估算，但絕不會超過「目前剩餘的總預算」；
-// 剩餘預算已經不夠再嘗試一次時就提早結束，不做注定會被砍斷、純粹浪費時間的嘗試。
-// 非暫時性錯誤（例如金鑰無效、模型不存在／已下架、request 格式錯誤）不重試，直接丟出，
-// 因為換模型或跨供應商也解決不了同一個請求本身的問題。
+//
+// 重點修正：Gemini 自己的重試迴圈只會使用「總預算 - 保留給 Claude 的額度」，
+// 不會像舊版一樣把整個 budgetMs 都花在 Gemini 上，導致備援永遠沒有真正可用的時間。
 async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
   if (!GEMINI_API_KEY) {
     throw new Error('AI 生成功能目前尚未啟用（尚未設定 GEMINI_API_KEY）。此為測試階段，之後要啟用時，到 Vercel 專案的 Environment Variables 補上這組金鑰並重新部署即可。');
   }
 
   const totalBudget = budgetMs || DEFAULT_BUDGET_MS;
+  const fallbackReserve = computeFallbackReserve(totalBudget);
+  const geminiBudget = totalBudget - fallbackReserve;
+
   const start = Date.now();
   const plan = [
     { model: GEMINI_MODEL, delayBefore: 0 },
@@ -151,12 +174,13 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
   for (let i = 0; i < plan.length; i++) {
     const { model, delayBefore } = plan[i];
 
-    let remaining = totalBudget - (Date.now() - start);
-    if (remaining < 3000) break; // 剩餘預算太少，再嘗試也只會被強制中斷，不值得
+    // 注意：這裡用 geminiBudget（已扣掉保留額度），不是 totalBudget。
+    let remaining = geminiBudget - (Date.now() - start);
+    if (remaining < 3000) break; // 剩餘的 Gemini 額度太少，再嘗試也只會被強制中斷，不值得
 
     if (delayBefore) {
       await sleep(Math.min(delayBefore, Math.max(remaining - 2000, 0)));
-      remaining = totalBudget - (Date.now() - start);
+      remaining = geminiBudget - (Date.now() - start);
       if (remaining < 3000) break;
     }
 
@@ -186,7 +210,9 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
     // 429/503（或 body 內對應碼）：繼續下一次嘗試
   }
 
-  // Gemini 兩個模型都失敗（或預算已耗盡），若還有剩餘預算且設定了 Claude 金鑰，最後試一次跨供應商備援。
+  // Gemini 兩個模型都失敗（或 Gemini 自己的額度已耗盡）。
+  // 因為一開始就保留了 fallbackReserve，這裡理論上一定還有夠用的時間可以試 Claude
+  // （除非 fallbackReserve 本身是 0，也就是沒有設定 ANTHROPIC_API_KEY）。
   const remainingForFallback = totalBudget - (Date.now() - start);
   if (process.env.ANTHROPIC_API_KEY && remainingForFallback > 4000) {
     try {
