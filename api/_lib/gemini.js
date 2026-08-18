@@ -246,6 +246,23 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
     if (res.ok) {
       try {
         const text = await extractText(res);
+        // 驗證這次輸出本身是不是合法 JSON。Gemini 在高負載／thinking 預算緊繃時，
+        // finishReason 有時候不會正確回報成 MAX_TOKENS，但實際輸出的 JSON 仍然是
+        // 卡在某個屬性中間、沒有正常收尾的半成品。與其把這個半成品往外送，讓呼叫端
+        // 在完全不同的檔案裡才 JSON.parse 失敗、丟出看不出原因的
+        // 「Unexpected end of JSON input」，不如在這裡就先驗證過：驗證失敗就當作
+        // 這次嘗試失敗，繼續換下一個模型重試，同時把原始內容記下來方便除錯。
+        try {
+          parseJSON(text);
+        } catch (parseErr) {
+          console.error(
+            `[gemini] 嘗試 #${i + 1} model=${model} 輸出不是合法 JSON（很可能是輸出被截斷，` +
+            `但 Google 未正確回報 finishReason:MAX_TOKENS）：${parseErr.message}\n` +
+            `原始輸出（前 500 字，供除錯用）：${text.slice(0, 500)}`
+          );
+          lastErrorText = `模型輸出的 JSON 格式不完整：${parseErr.message}`;
+          continue;
+        }
         if (model !== GEMINI_MODEL) console.warn(`Gemini 主模型（${GEMINI_MODEL}）過載，已改用備援模型 ${model} 成功回應。`);
         return text;
       } catch (err) {
