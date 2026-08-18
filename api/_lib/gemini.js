@@ -115,9 +115,24 @@ function isRetryableResponse(status, bodyText) {
   return false;
 }
 
-// 把成功回應轉成純文字（呼叫端自行決定是否解析 JSON）。丟出的錯誤都是「不該重試」的錯誤。
+// 把成功回應轉成純文字（呼叫端自行決定是否解析 JSON）。
+// 注意：res.json() 失敗（HTTP body 不完整）視為「暫時性、可重試」的錯誤；
+// 其餘（被安全過濾擋下、內容被截斷、內容為空）是模型本身輸出的問題，
+// 換一次模型未必會改善，但仍值得讓上層重試迴圈去換下一個模型試試看，
+// 因此這裡統一都標記 retryable，交由呼叫端決定要不要繼續嘗試。
 async function extractText(res) {
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    // 常見於 Google 高負載時 gateway 提前切斷連線、回傳不完整的 body，
+    // 此時 HTTP status 可能仍是 200，但 body 被腰斬，JSON.parse 會丟出
+    // 「Unexpected end of JSON input」。這是暫時性錯誤，值得重試。
+    throw Object.assign(
+      new Error('Gemini 回應內容不完整（HTTP body 可能被提前截斷，常見於高負載時）：' + err.message),
+      { retryable: true }
+    );
+  }
   if (!data.candidates || !data.candidates.length) {
     const reason = data.promptFeedback && data.promptFeedback.blockReason;
     throw new Error('Gemini 未回傳內容' + (reason ? `（被安全過濾擋下：${reason}）` : '：' + JSON.stringify(data)));
@@ -206,8 +221,17 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
     }
 
     if (res.ok) {
-      if (model !== GEMINI_MODEL) console.warn(`Gemini 主模型（${GEMINI_MODEL}）過載，已改用備援模型 ${model} 成功回應。`);
-      return extractText(res);
+      try {
+        const text = await extractText(res);
+        if (model !== GEMINI_MODEL) console.warn(`Gemini 主模型（${GEMINI_MODEL}）過載，已改用備援模型 ${model} 成功回應。`);
+        return text;
+      } catch (err) {
+        if (err.retryable) {
+          lastErrorText = err.message;
+          continue; // HTTP body 不完整等暫時性問題：換下一次嘗試（可能是備援模型）
+        }
+        throw err; // 內容被安全過濾擋下等，非暫時性問題，不用再試
+      }
     }
 
     const text = await res.text();
