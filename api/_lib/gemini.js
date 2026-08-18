@@ -1,70 +1,92 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 // 2026/08 現行穩定版本；gemini-2.5-flash-lite 即將於 10 月停用，不要用它。
-// 若你的帳號 free tier 尚未開放 3.7，AI Studio 會列出目前你能用的免費模型清單，改這個環境變數即可。
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
+// 主模型撞到 429（頻率限制）／503（過載）時，最後改打這個備援模型；
+// 新模型剛上市常常比較容易滿載，用比較成熟的版本墊底。
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash';
 
-// 呼叫 Gemini，要求以純文字回傳（呼叫端自行決定是否解析 JSON）。
+const RETRYABLE_STATUS = new Set([429, 503]);
+
+const SAFETY_SETTINGS = [
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+];
+
+async function requestGemini(model, { system, prompt, maxTokens }) {
+  return fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: system ? { parts: [{ text: system }] } : undefined,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: maxTokens, responseMimeType: 'application/json' },
+        safetySettings: SAFETY_SETTINGS,
+      }),
+    }
+  );
+}
+
+// 把成功回應轉成純文字（呼叫端自行決定是否解析 JSON）。丟出的錯誤都是「不該重試」的錯誤。
+async function extractText(res) {
+  const data = await res.json();
+  if (!data.candidates || !data.candidates.length) {
+    const reason = data.promptFeedback && data.promptFeedback.blockReason;
+    throw new Error('Gemini 未回傳內容' + (reason ? `（被安全過濾擋下：${reason}）` : '：' + JSON.stringify(data)));
+  }
+  const candidate = data.candidates[0];
+  if (candidate.finishReason === 'MAX_TOKENS') {
+    console.warn('Gemini 回應因 maxOutputTokens 被截斷，內容可能不完整（JSON.parse 稍後可能會失敗）。');
+  } else if (candidate.finishReason === 'SAFETY') {
+    throw new Error('Gemini 回應被安全過濾擋下（finishReason: SAFETY）。');
+  }
+  const parts = (candidate.content && candidate.content.parts) || [];
+  return parts.map(p => p.text || '').join('\n');
+}
+
+// 呼叫 Gemini：429/503 這類暫時性錯誤會自動重試，最後一次改打備援模型。
 // 介面（參數/回傳值）刻意對齊 anthropic.js 的 callClaude，方便切換。
 async function callGemini({ system, prompt, maxTokens = 3000 }) {
   if (!GEMINI_API_KEY) {
     throw new Error('AI 生成功能目前尚未啟用（尚未設定 GEMINI_API_KEY）。此為測試階段，之後要啟用時，到 Vercel 專案的 Environment Variables 補上這組金鑰並重新部署即可。');
   }
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        // Gemini 用獨立的 system_instruction 欄位，不是塞進 messages 裡。
-        system_instruction: system ? { parts: [{ text: system }] } : undefined,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          maxOutputTokens: maxTokens,
-          // 三個呼叫端（suggest / 生成主流程 / swipe 分類）全部要求純 JSON 回應，
-          // 開啟原生 JSON 模式讓 Gemini 直接照格式輸出，比純文字要求穩定很多。
-          responseMimeType: 'application/json',
-        },
-        // 行銷/urgency 類文案容易被預設安全過濾誤判，這裡放寬到「僅擋高風險」。
-        // 上線前務必實測審核類別是否符合你們的合規要求，必要時調整回較嚴格的等級。
-        safetySettings: [
-          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
-        ],
-      }),
+  // 刻意把重試總延遲控制在 1 秒左右，避免在 Vercel 預設的 10 秒 function timeout 內被腰斬。
+  const attempts = [
+    { model: GEMINI_MODEL, delayBefore: 0 },
+    { model: GEMINI_MODEL, delayBefore: 700 },
+    { model: GEMINI_FALLBACK_MODEL, delayBefore: 300 },
+  ];
+
+  let lastErrorText = '';
+  for (let i = 0; i < attempts.length; i++) {
+    const { model, delayBefore } = attempts[i];
+    if (delayBefore) await new Promise(r => setTimeout(r, delayBefore));
+
+    const res = await requestGemini(model, { system, prompt, maxTokens });
+    if (res.ok) {
+      if (model !== GEMINI_MODEL) console.warn(`Gemini 主模型（${GEMINI_MODEL}）過載，已改用備援模型 ${model} 成功回應。`);
+      return extractText(res);
     }
-  );
 
-  if (!res.ok) {
     const text = await res.text();
-    throw new Error('Gemini API 呼叫失敗：' + text);
+    lastErrorText = text;
+    if (!RETRYABLE_STATUS.has(res.status)) {
+      // 非暫時性錯誤（例如金鑰無效、request 格式錯誤）不重試，直接丟出。
+      throw new Error('Gemini API 呼叫失敗：' + text);
+    }
+    // 429/503：繼續下一次嘗試
   }
 
-  const data = await res.json();
-
-  // 整段被安全過濾擋下時，candidates 會是空的，錯誤原因在 promptFeedback。
-  if (!data.candidates || !data.candidates.length) {
-    const reason = data.promptFeedback && data.promptFeedback.blockReason;
-    throw new Error('Gemini 未回傳內容' + (reason ? `（被安全過濾擋下：${reason}）` : '：' + JSON.stringify(data)));
-  }
-
-  const candidate = data.candidates[0];
-
-  // 內容因超過 maxOutputTokens 被截斷，或單一候選被安全過濾擋下。
-  if (candidate.finishReason === 'MAX_TOKENS') {
-    console.warn('Gemini 回應因 maxOutputTokens 被截斷，內容可能不完整（JSON.parse 稍後可能會失敗）。');
-  } else if (candidate.finishReason === 'SAFETY') {
-    throw new Error('Gemini 回應被安全過濾擋下（finishReason: SAFETY）。');
-  }
-
-  const parts = (candidate.content && candidate.content.parts) || [];
-  return parts.map(p => p.text || '').join('\n');
+  throw new Error(
+    `Gemini API 呼叫失敗（主模型與備援模型 ${GEMINI_FALLBACK_MODEL} 皆過載或被限流，已重試 ${attempts.length} 次）：` + lastErrorText
+  );
 }
 
 // 從模型回應中取出 JSON（去除可能的 ```json 圍籬）。
-// 開了 responseMimeType 之後通常不會再有圍籬，這裡保留是為了向後相容、多一層保險。
 function parseJSON(text) {
   const cleaned = text.replace(/```json|```/g, '').trim();
   return JSON.parse(cleaned);
