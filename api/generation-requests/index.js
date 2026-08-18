@@ -7,12 +7,25 @@ const DEFAULT_BLOCK_ORDER = {
   low: ['hook', 'pain_agitate', 'solution', 'urgency', 'cta'],
   high: ['hook', 'solution', 'trust_proof', 'emotional_close', 'cta'],
 };
-// 要一次產出 3 組完整多區塊文案（篇幅選「長」時中文內容加總可能上看 1500 字），加上 JSON
-// 結構本身的巢狀開銷，再加上 Gemini 3.x 就算 thinking level 是 LOW 仍會消耗一部分
-// maxOutputTokens 額度，給足夠的緩衝避免輸出被截斷。
-const GENERATION_MAX_TOKENS = Number(process.env.GENERATION_MAX_TOKENS || 8000);
+
+// ── 修正重點 ──────────────────────────────────────────────────────────
+// 目前沒有接 ANTHROPIC_API_KEY 備援，只能靠 Gemini 自己扛。Gemini 官方
+// 目前處於高負載狀態，一次要求產出 3 組完整多區塊文案（篇幅選「長」時
+// 中文內容加總可能上看 1500 字＋JSON 結構開銷）會讓單次請求的輸出量變大，
+// 更容易撞到過載／逾時／輸出被截斷（finishReason: MAX_TOKENS）。
+// 把篇數改成可由環境變數調整，預設先降為 1，讓單次請求更小、更容易在
+// Gemini 高負載時仍能順利完成；之後負載恢復正常、或接上 Claude 備援後，
+// 只要在 Vercel 把 GENERATION_VARIANT_COUNT 調回 3 即可，不需要改程式碼。
+const VARIANT_COUNT = Math.max(1, Math.min(3, Number(process.env.GENERATION_VARIANT_COUNT || 1)));
+const ANGLE_TYPES = ['fear', 'aspiration', 'logic'].slice(0, VARIANT_COUNT);
+
+// 輸出 token 需求大致跟篇數成正比，所以讓 GENERATION_MAX_TOKENS 的預設值
+// 隨 VARIANT_COUNT 等比例調整（仍可用環境變數直接覆寫）；篇數變少時，
+// 單次請求需要的 maxOutputTokens 也跟著變少，attemptTimeout 的估算
+// （gemini.js 裡 maxTokens*4ms）也會跟著變短，整體更不容易逾時。
+const GENERATION_MAX_TOKENS = Number(process.env.GENERATION_MAX_TOKENS || Math.round(8000 * (VARIANT_COUNT / 3)));
 // vercel.json 裡這支的 maxDuration 是 60 秒，扣掉讀 profile／痛點／解決方案／範例文案
-// （約 4 次查詢）與最後 2 次批次寫入的開銷，留給 AI 呼叫（含重試與跨供應商備援）的預算抓 50 秒。
+// （約 4 次查詢）與最後 2 次批次寫入的開銷，留給 AI 呼叫（含重試，目前沒有跨供應商備援）的預算抓 50 秒。
 const AI_BUDGET_MS = Number(process.env.GENERATION_AI_BUDGET_MS || 50000);
 
 module.exports = async (req, res) => {
@@ -66,7 +79,7 @@ module.exports = async (req, res) => {
       ? block_order
       : DEFAULT_BLOCK_ORDER[profile.price_tier];
 
-    // 6. 組 Prompt，呼叫模型產出 3 組變體
+    // 6. 組 Prompt，呼叫模型產出變體（篇數由 VARIANT_COUNT 控制）
     const system = `你是資深廣告文案策略師。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
 生成規則：
 1. 每組文案依指定的區塊順序撰寫，每個區塊對應一小段內容。
@@ -93,11 +106,11 @@ ${pairs.map((p, i) => `${i + 1}. 表層問題：${p.surface_problem}／深層渴
 【範例文案風格參考（僅供學習手法，不可逐字複製）】
 ${swipeExamples.length ? swipeExamples.map((s, i) => `範例${i + 1}（框架：${s.framework_tag}）：${s.raw_content.slice(0, 200)}`).join('\n') : '（尚無範例文案）'}
 
-請產出 3 組文案變體，角度分別為 fear（恐懼訴求）、aspiration（夢想訴求）、logic（邏輯說服）。
+請產出 ${VARIANT_COUNT} 組文案變體，角度分別為 ${ANGLE_TYPES.join('、')}（依序對應）。
 輸出格式：
 {"variants":[
-  {"angle_type":"fear","title":"...","cta":"...","blocks":[{"type":"hook","content":"..."}, ...依區塊順序...]}
-  , ... 共3組
+  {"angle_type":"${ANGLE_TYPES[0]}","title":"...","cta":"...","blocks":[{"type":"hook","content":"..."}, ...依區塊順序...]}
+  ${VARIANT_COUNT > 1 ? `, ... 共 ${VARIANT_COUNT} 組，角度依序對應 ${ANGLE_TYPES.join('、')}` : ''}
 ]}`;
 
     const raw = await call({ system, prompt, maxTokens: GENERATION_MAX_TOKENS, budgetMs: AI_BUDGET_MS });
