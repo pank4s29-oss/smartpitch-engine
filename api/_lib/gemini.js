@@ -1,6 +1,6 @@
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 // 2026/08 現行穩定版本；gemini-2.5-flash-lite 即將於 10 月停用，不要用它。
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.7-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 // 主模型撞到 429（頻率限制）／503（過載）時，最後改打這個備援模型；
 // 新模型剛上市常常比較容易滿載，用比較成熟的版本墊底。
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash';
