@@ -115,6 +115,26 @@ function isRetryableResponse(status, bodyText) {
   return false;
 }
 
+// 診斷用：把 HTTP status / body 內的 error.status 轉成人類可讀的分類。
+// 429/RESOURCE_EXHAUSTED＝你自己的用量已經超過 RPM/TPM/RPD 額度（免費額度尤其容易撞到，
+// 目前 gemini-3.x flash 系列免費額度大約只有 10 RPM），這是「量」的問題，重試通常沒用；
+// 503/UNAVAILABLE 才是 Google 那邊真的撐不住，屬於暫時性問題，重試才有意義。
+function classifyFailure(status, bodyText) {
+  let bodyStatus = null, bodyCode = null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    bodyStatus = parsed && parsed.error && parsed.error.status;
+    bodyCode = parsed && parsed.error && parsed.error.code;
+  } catch (_) { /* body 不是 JSON */ }
+  if (status === 429 || bodyStatus === 'RESOURCE_EXHAUSTED' || bodyCode === 429) {
+    return 'QUOTA_EXCEEDED（配額/速率限制已用盡，通常是免費額度的 RPM 或 RPD 上限，重試沒有用，要等額度恢復或升級付費層）';
+  }
+  if (status === 503 || bodyStatus === 'UNAVAILABLE' || bodyCode === 503) {
+    return 'SERVICE_OVERLOADED（Google 那端真的過載，屬於暫時性問題，值得重試）';
+  }
+  return `UNKNOWN（HTTP ${status}${bodyStatus ? '／body status: ' + bodyStatus : ''}）`;
+}
+
 // 把成功回應轉成純文字（呼叫端自行決定是否解析 JSON）。
 // 注意：res.json() 失敗（HTTP body 不完整）視為「暫時性、可重試」的錯誤；
 // 其餘（被安全過濾擋下、內容被截斷、內容為空）是模型本身輸出的問題，
@@ -209,10 +229,13 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
 
     const attemptTimeout = computeAttemptTimeout(maxTokens, remaining, attemptsLeft);
 
+    const attemptStart = Date.now();
     let res;
     try {
       res = await requestGemini(model, { system, prompt, maxTokens }, attemptTimeout);
     } catch (err) {
+      const elapsed = Date.now() - attemptStart;
+      console.error(`[gemini] 嘗試 #${i + 1} model=${model} timeout=${attemptTimeout}ms 實際耗時=${elapsed}ms → 逾時（分類：TIMEOUT，可能是 attemptTimeout 太短，也可能是 Google 那端真的很慢）`);
       if (err.retryable) {
         lastErrorText = err.message;
         continue;
@@ -226,6 +249,7 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
         if (model !== GEMINI_MODEL) console.warn(`Gemini 主模型（${GEMINI_MODEL}）過載，已改用備援模型 ${model} 成功回應。`);
         return text;
       } catch (err) {
+        console.error(`[gemini] 嘗試 #${i + 1} model=${model} HTTP 200 但內容解析失敗：${err.message}`);
         if (err.retryable) {
           lastErrorText = err.message;
           continue; // HTTP body 不完整等暫時性問題：換下一次嘗試（可能是備援模型）
@@ -236,6 +260,8 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
 
     const text = await res.text();
     lastErrorText = text;
+    const classification = classifyFailure(res.status, text);
+    console.error(`[gemini] 嘗試 #${i + 1} model=${model} HTTP ${res.status} → ${classification}\n原始 body（前 300 字）：${text.slice(0, 300)}`);
     if (!isRetryableResponse(res.status, text)) {
       throw new Error('Gemini API 呼叫失敗：' + text);
     }
