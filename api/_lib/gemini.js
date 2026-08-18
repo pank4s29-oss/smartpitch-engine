@@ -11,9 +11,15 @@ const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.6-f
 // 注意：gemini-3.7-flash 不支援 MINIMAL，只能用 LOW/MEDIUM/HIGH；LOW 是目前所有 3.x 模型都支援的最低值。
 const THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || 'LOW';
 
-// 每次嘗試的 fetch timeout。刻意壓在較短的秒數，讓「重試 + 跨供應商備援」的總耗時
-// 仍能落在呼叫端 Vercel 函式的 maxDuration 預算內（suggest.js 45s／generation-requests 60s）。
-const REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 8000);
+// 沒有呼叫端明確傳入 budgetMs 時的保守預設值。
+const DEFAULT_BUDGET_MS = Number(process.env.GEMINI_DEFAULT_BUDGET_MS || 25000);
+// 單次嘗試 timeout 的下限／上限。maxTokens 越大，允許的單次等待時間越長，
+// 但絕對不會超過「目前剩餘的總預算」——這是這次修正的重點：
+// 上一版固定 8 秒，對 800 tokens 的小請求可能還夠，對 8000 tokens 的大請求則完全不合理，
+// 而且沒考慮到 Google 目前正處於官方公告的「高負載」狀態，正常回應本來就可能要 10~20 幾秒。
+const MIN_ATTEMPT_TIMEOUT_MS = 12000;
+const MAX_ATTEMPT_TIMEOUT_MS = 35000;
+const MS_PER_TOKEN = 4; // 粗估：maxTokens * 4ms 作為單次嘗試該給的基準時間
 
 // HTTP 傳輸層狀態碼視為可重試。
 const RETRYABLE_STATUS = new Set([429, 503]);
@@ -29,9 +35,11 @@ const SAFETY_SETTINGS = [
   { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
 ];
 
-// 帶 timeout 的 fetch。原本的版本完全沒有設定 timeout，Google 那端一旦變慢，
-// 這個 fetch 會一直掛著，直到 Vercel 平台自己在 maxDuration 到點時把整支函式砍掉，
-// 變成使用者端看到的 504（而且因為是平台層砍斷，不會進到我們的 catch，拿不到有意義的錯誤訊息）。
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// 帶 timeout 的 fetch。
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -47,7 +55,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-async function requestGemini(model, { system, prompt, maxTokens }) {
+async function requestGemini(model, { system, prompt, maxTokens }, timeoutMs) {
   return fetchWithTimeout(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
     {
@@ -64,7 +72,7 @@ async function requestGemini(model, { system, prompt, maxTokens }) {
         safetySettings: SAFETY_SETTINGS,
       }),
     },
-    REQUEST_TIMEOUT_MS
+    timeoutMs
   );
 }
 
@@ -99,16 +107,12 @@ async function extractText(res) {
   const text = parts.map(p => p.text || '').join('\n');
 
   if (!text.trim()) {
-    // 通常是 maxOutputTokens 額度被 thinking 佔滿，或本身被截斷成空字串。
-    // 明確丟錯，避免呼叫端把空字串丟給 JSON.parse 產生看不懂的「Unexpected end of JSON input」。
     throw new Error(
       `Gemini 回應內容為空（finishReason: ${candidate.finishReason || '未知'}）。` +
       '常見原因是 maxOutputTokens 額度被思考過程用完，可提高呼叫時的 maxTokens 再試一次。'
     );
   }
   if (candidate.finishReason === 'MAX_TOKENS') {
-    // 原本這裡只有 console.warn，仍把截斷的文字丟回去，導致呼叫端的 JSON.parse 對著不完整的
-    // JSON 失敗、丟出看不出原因的 SyntaxError。現在直接在這裡截斷失敗，錯誤訊息才會講清楚原因。
     throw new Error(
       'Gemini 回應被截斷（maxOutputTokens 額度用完，finishReason: MAX_TOKENS）。' +
       '請提高呼叫時的 maxTokens 後再試一次。'
@@ -117,35 +121,51 @@ async function extractText(res) {
   return text;
 }
 
-// 呼叫 Gemini：429/503（含 body 內對應的 error.code / error.status）這類暫時性錯誤會自動重試，
-// 重試間隔採指數退避；主模型 + 備援模型都失敗後，若有設定 ANTHROPIC_API_KEY，最後改打 Claude 當
-// 跨供應商備援，避免單一供應商過載就讓整個功能掛掉。
+function computeAttemptTimeout(maxTokens, remainingBudgetMs) {
+  const base = Math.min(Math.max(maxTokens * MS_PER_TOKEN, MIN_ATTEMPT_TIMEOUT_MS), MAX_ATTEMPT_TIMEOUT_MS);
+  // 留 500ms 安全邊界給後續處理（例如把結果轉成文字、丟回呼叫端）。
+  return Math.max(2000, Math.min(base, remainingBudgetMs - 500));
+}
+
+// 呼叫 Gemini：429/503（含 body 內對應的 error.code / error.status）與逾時都視為暫時性錯誤會自動重試。
+// budgetMs：這次呼叫（含所有重試與跨供應商備援）總共能花多少時間，由呼叫端依自己在 vercel.json
+// 設定的 maxDuration 減去其他開銷（讀寫資料庫等）後算出，避免整體耗時超過函式的執行時限。
+// 每次嘗試的 timeout 會依 maxTokens 動態估算，但絕不會超過「目前剩餘的總預算」；
+// 剩餘預算已經不夠再嘗試一次時就提早結束，不做注定會被砍斷、純粹浪費時間的嘗試。
 // 非暫時性錯誤（例如金鑰無效、模型不存在／已下架、request 格式錯誤）不重試，直接丟出，
 // 因為換模型或跨供應商也解決不了同一個請求本身的問題。
-async function callGemini({ system, prompt, maxTokens = 3000 }) {
+async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
   if (!GEMINI_API_KEY) {
     throw new Error('AI 生成功能目前尚未啟用（尚未設定 GEMINI_API_KEY）。此為測試階段，之後要啟用時，到 Vercel 專案的 Environment Variables 補上這組金鑰並重新部署即可。');
   }
 
-  // 指數退避：0ms → 800ms → 2000ms。搭配每次嘗試 REQUEST_TIMEOUT_MS（預設 8s）的上限，
-  // 3 次嘗試的最壞情況總耗時約 8+0.8+8+2+8 ≈ 26.8 秒，在 suggest.js（45s）與
-  // generation-requests（60s）的 maxDuration 預算內都還留有緩衝。
-  const attempts = [
+  const totalBudget = budgetMs || DEFAULT_BUDGET_MS;
+  const start = Date.now();
+  const plan = [
     { model: GEMINI_MODEL, delayBefore: 0 },
     { model: GEMINI_MODEL, delayBefore: 800 },
-    { model: GEMINI_FALLBACK_MODEL, delayBefore: 2000 },
+    { model: GEMINI_FALLBACK_MODEL, delayBefore: 1500 },
   ];
 
   let lastErrorText = '';
-  for (let i = 0; i < attempts.length; i++) {
-    const { model, delayBefore } = attempts[i];
-    if (delayBefore) await new Promise(r => setTimeout(r, delayBefore));
+  for (let i = 0; i < plan.length; i++) {
+    const { model, delayBefore } = plan[i];
+
+    let remaining = totalBudget - (Date.now() - start);
+    if (remaining < 3000) break; // 剩餘預算太少，再嘗試也只會被強制中斷，不值得
+
+    if (delayBefore) {
+      await sleep(Math.min(delayBefore, Math.max(remaining - 2000, 0)));
+      remaining = totalBudget - (Date.now() - start);
+      if (remaining < 3000) break;
+    }
+
+    const attemptTimeout = computeAttemptTimeout(maxTokens, remaining);
 
     let res;
     try {
-      res = await requestGemini(model, { system, prompt, maxTokens });
+      res = await requestGemini(model, { system, prompt, maxTokens }, attemptTimeout);
     } catch (err) {
-      // fetchWithTimeout 對逾時丟出的錯誤帶有 retryable 標記，當作跟 429/503 同等對待。
       if (err.retryable) {
         lastErrorText = err.message;
         continue;
@@ -161,28 +181,28 @@ async function callGemini({ system, prompt, maxTokens = 3000 }) {
     const text = await res.text();
     lastErrorText = text;
     if (!isRetryableResponse(res.status, text)) {
-      // 非暫時性錯誤（例如金鑰無效、模型不存在／已下架、request 格式錯誤）不重試，直接丟出。
       throw new Error('Gemini API 呼叫失敗：' + text);
     }
     // 429/503（或 body 內對應碼）：繼續下一次嘗試
   }
 
-  // 主模型與備援模型都用盡重試預算，若有設定 Claude 金鑰，最後試一次跨供應商備援。
-  if (process.env.ANTHROPIC_API_KEY) {
+  // Gemini 兩個模型都失敗（或預算已耗盡），若還有剩餘預算且設定了 Claude 金鑰，最後試一次跨供應商備援。
+  const remainingForFallback = totalBudget - (Date.now() - start);
+  if (process.env.ANTHROPIC_API_KEY && remainingForFallback > 4000) {
     try {
       const { callClaude } = require('./anthropic');
-      console.warn('Gemini 主模型與備援模型皆過載，改用 Claude 作為跨供應商備援。');
-      return await callClaude({ system, prompt, maxTokens });
+      console.warn('Gemini 主模型與備援模型皆過載或逾時，改用 Claude 作為跨供應商備援。');
+      return await callClaude({ system, prompt, maxTokens, timeoutMs: remainingForFallback - 500 });
     } catch (fallbackErr) {
       throw new Error(
-        `Gemini API 呼叫失敗（主模型與備援模型 ${GEMINI_FALLBACK_MODEL} 皆過載或被限流，已重試 ${attempts.length} 次），` +
+        `Gemini API 呼叫失敗（主模型與備援模型 ${GEMINI_FALLBACK_MODEL} 皆過載或逾時），` +
         `跨供應商備援 Claude 也失敗：${fallbackErr.message}。原始 Gemini 錯誤：${lastErrorText}`
       );
     }
   }
 
   throw new Error(
-    `Gemini API 呼叫失敗（主模型與備援模型 ${GEMINI_FALLBACK_MODEL} 皆過載或被限流，已重試 ${attempts.length} 次）：` + lastErrorText
+    `Gemini API 呼叫失敗（主模型與備援模型 ${GEMINI_FALLBACK_MODEL} 皆過載或逾時，已在預算內盡可能重試）：` + lastErrorText
   );
 }
 
