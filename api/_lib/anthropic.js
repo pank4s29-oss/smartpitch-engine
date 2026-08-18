@@ -1,7 +1,5 @@
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-// 跟 gemini.js 的 REQUEST_TIMEOUT_MS 同一邏輯：避免 fetch 沒有 timeout、
-// 一路掛到 Vercel 平台自己在 maxDuration 到點時砍斷函式（變成使用者端的 504）。
-const REQUEST_TIMEOUT_MS = Number(process.env.ANTHROPIC_TIMEOUT_MS || 15000);
+const DEFAULT_TIMEOUT_MS = Number(process.env.ANTHROPIC_TIMEOUT_MS || 20000);
 
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
@@ -19,7 +17,9 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 // 呼叫 Claude，要求以純文字回傳（呼叫端自行決定是否解析 JSON）。
-async function callClaude({ system, prompt, maxTokens = 3000 }) {
+// timeoutMs：可由呼叫端覆寫（例如 gemini.js 用剩餘預算呼叫這裡當跨供應商備援時），
+// 沒傳的話用 DEFAULT_TIMEOUT_MS。
+async function callClaude({ system, prompt, maxTokens = 3000, timeoutMs }) {
   if (!ANTHROPIC_API_KEY) {
     throw new Error('AI 生成功能目前尚未啟用（尚未設定 ANTHROPIC_API_KEY）。此為測試階段，之後要啟用時，到 Vercel 專案的 Environment Variables 補上這組金鑰並重新部署即可。');
   }
@@ -39,7 +39,7 @@ async function callClaude({ system, prompt, maxTokens = 3000 }) {
         messages: [{ role: 'user', content: prompt }],
       }),
     },
-    REQUEST_TIMEOUT_MS
+    Math.max(3000, timeoutMs || DEFAULT_TIMEOUT_MS)
   );
   if (!res.ok) {
     const text = await res.text();
