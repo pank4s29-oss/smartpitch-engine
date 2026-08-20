@@ -213,6 +213,7 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
   const start = Date.now();
 
   let lastErrorText = '';
+  let hadQuotaExceeded = false; // 是否曾遇到 429/RESOURCE_EXHAUSTED——這種情況重試沒有意義，要如實告知使用者
   for (let i = 0; i < PLAN.length; i++) {
     const { model, delayBefore } = PLAN[i];
     const attemptsLeft = PLAN.length - i;
@@ -278,6 +279,7 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
     const text = await res.text();
     lastErrorText = text;
     const classification = classifyFailure(res.status, text);
+    if (classification.startsWith('QUOTA_EXCEEDED')) hadQuotaExceeded = true;
     console.error(`[gemini] 嘗試 #${i + 1} model=${model} HTTP ${res.status} → ${classification}\n原始 body（前 300 字）：${text.slice(0, 300)}`);
     if (!isRetryableResponse(res.status, text)) {
       throw new Error('Gemini API 呼叫失敗：' + text);
@@ -302,6 +304,13 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
     }
   }
 
+  if (hadQuotaExceeded) {
+    throw new Error(
+      '目前這個時段的 AI 免費額度（每分鐘可呼叫次數）已用完，重試也沒有用，請等 1 分鐘左右再試一次。' +
+      '若這個狀況經常發生，建議到 Vercel 專案的 Environment Variables 加上 ANTHROPIC_API_KEY（會自動在 Gemini 額度用盡時改用 Claude），' +
+      '或考慮升級 Gemini 的付費方案以提高速率上限。'
+    );
+  }
   throw new Error(
     `Gemini API 呼叫失敗（主模型與備援模型 ${GEMINI_FALLBACK_MODEL} 皆過載或逾時，已在預算內盡可能重試）：` + lastErrorText
   );
