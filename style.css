@@ -231,6 +231,34 @@ button.small { padding: 5px 10px; font-size: 12.5px; }
 .pain-actions { display: flex; gap: 8px; margin-top: 12px; }
 .pain-quote { font-size: 12.5px; color: var(--ink-soft); font-style: italic; border-left: 2px solid var(--line-strong); padding-left: 10px; margin-top: 8px; }
 
+/* 痛點的完整陳述（detail）：比表層問題/深層渴望更長的一段敘述，用來取代「還要自己腦補情境」。 */
+.pain-detail { font-size: 13px; line-height: 1.65; color: var(--ink); margin-top: 8px; }
+
+/* ---------- 痛點清單：來源分組（自有語料 vs 文案手法庫帶入） ---------- */
+
+.pain-group-heading {
+  display: flex; align-items: center; justify-content: space-between;
+  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--teal-dark); padding: 6px 2px; margin: 18px 0 8px;
+  border-bottom: 1px solid var(--line-strong);
+}
+.pain-group-heading:first-child { margin-top: 0; }
+.pain-group-heading.swipe { color: var(--flag); }
+
+/* 來自文案手法庫帶入的痛點卡片：用左側色條 + 淺色底標示出「這是手法參考，不是你自己顧客的第一手證據」。 */
+.pain-card.from-swipe {
+  border-left: 3px solid var(--flag);
+  background: linear-gradient(to right, var(--flag-bg) 0%, #fff 4%);
+}
+
+/* 潛在受眾族群卡片：與目標受眾的差異說明 */
+.segment-differentiation {
+  font-size: 12.5px; color: var(--teal-dark); background: var(--evidence-bg);
+  border: 1px solid var(--evidence); border-radius: var(--radius);
+  padding: 8px 10px; margin-top: 10px;
+}
+.segment-differentiation b { font-family: var(--font-mono); font-weight: 600; }
+
 /* ---------- 語料項目 ---------- */
 
 .feedback-item {
