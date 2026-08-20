@@ -9,7 +9,10 @@ const { call, parseJSON } = require('./_lib/provider');
 
 const SUGGEST_AI_BUDGET_MS = Number(process.env.SUGGEST_AI_BUDGET_MS || 40000);
 const EXTRACT_AI_BUDGET_MS = Number(process.env.EXTRACT_AI_BUDGET_MS || 25000);
+const SEGMENTS_AI_BUDGET_MS = Number(process.env.SEGMENTS_AI_BUDGET_MS || 30000);
 const EXTRACT_MAX_BATCH_SIZE = 20;
+
+const norm = s => (s || '').trim().toLowerCase();
 
 async function handleList(req, res, user, profileId) {
   try {
@@ -209,6 +212,111 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
   }
 }
 
+// 潛在／隱藏受眾地圖：從目前已通過複核（或至少未被駁回）的痛點出發，
+// 讓 AI 反推「這些痛點分別可能對應到哪些更細分的受眾輪廓」——不寫入資料庫，
+// 每次呼叫都是即時分析，就像 suggest 一樣是可重複產生的草稿性質。
+async function handleSegments(req, res, user, profileId) {
+  if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
+  try {
+    const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=*`);
+    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+
+    const points = await restRequest(
+      `audience_pain_points?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&review_status=neq.rejected&select=id,surface_problem,deep_desire`
+    );
+    if (!points.length) {
+      return res.status(200).json({ segments: [], message: '尚無可分析的痛點（已駁回的痛點不計入），請先建立或萃取痛點。' });
+    }
+
+    const system = `你是受眾區隔顧問。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
+任務：從一份受眾痛點清單，反推出可能存在的「潛在／隱藏受眾」——也就是表面上都屬於同一個目標受眾，
+但實際上動機、情境或急迫程度不同的細分族群。每個痛點可以同時屬於多個族群。
+規則：
+1. 抓出 2-5 個有區別度的族群，不要只是把原本的目標受眾換句話說。
+2. 每個族群要有清楚的區隔依據（情境、動機、急迫程度、決策角色等），不能只靠年齡或性別區分。
+3. matched_indices 只能填入下方清單中實際存在的編號，不可捏造。
+4. 若清單裡的痛點明顯無法反映出多元受眾（例如全部指向同一種情境），可以回傳少於 2 個族群，並在對應的 note 欄位說明原因。`;
+
+    const prompt = `【領域】${profile.domain_tag}
+【目前設定的目標受眾】${profile.audience}
+
+【痛點清單】（編號從 0 開始）
+${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴望：${p.deep_desire}`).join('\n')}
+
+請輸出：
+{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境（1-2句）","rationale":"為什麼這些痛點特別打中他們（1句）","matched_indices":[0,2]}],"note":"若整體區隔度不高，說明原因（選填）"}`;
+
+    const raw = await call({ system, prompt, maxTokens: 1200, budgetMs: SEGMENTS_AI_BUDGET_MS });
+    const parsed = parseJSON(raw);
+    const rawSegments = parsed && Array.isArray(parsed.segments) ? parsed.segments : [];
+
+    const segments = rawSegments.map(s => {
+      const indices = Array.isArray(s.matched_indices) ? s.matched_indices.filter(i => points[i]) : [];
+      return {
+        segment_name: s.segment_name || '未命名族群',
+        description: s.description || '',
+        rationale: s.rationale || '',
+        matched_pain_point_ids: indices.map(i => points[i].id),
+      };
+    }).filter(s => s.matched_pain_point_ids.length);
+
+    return res.status(200).json({ segments, note: parsed && parsed.note, based_on_count: points.length });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+// 從「產業文案手法庫」已分析過的範例文案中，找出領域相近的文案裡萃取出的受眾痛點，
+// 作為草稿讓使用者一鍵帶入——邏輯與 handleSuggest 相同（回傳草稿、不直接寫入），
+// 差別是這裡的草稿來自真實廣告文案的萃取結果，而不是模型憑空發想。
+async function handleFromSwipe(req, res, user, profileId) {
+  if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
+  try {
+    const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=domain_tag`);
+    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+
+    const swipes = await restRequest(
+      `swipe_copies?user_id=eq.${user.id}&select=id,industry_tag,extracted_pain_points&extracted_pain_points=not.is.null`
+    );
+
+    const domainNorm = norm(profile.domain_tag);
+    const matched = swipes.filter(s => {
+      const tag = norm(s.industry_tag);
+      return tag && domainNorm && (tag.includes(domainNorm) || domainNorm.includes(tag));
+    });
+
+    const seen = new Set();
+    const suggestions = [];
+    matched.forEach(s => {
+      (Array.isArray(s.extracted_pain_points) ? s.extracted_pain_points : []).forEach(p => {
+        const key = norm(p.surface_problem);
+        if (!p.surface_problem || !p.deep_desire || seen.has(key)) return;
+        seen.add(key);
+        suggestions.push({
+          surface_problem: p.surface_problem,
+          deep_desire: p.deep_desire,
+          detail: p.quote ? `文案手法庫萃取，原文片段：「${p.quote}」` : null,
+          from_swipe_copy_id: s.id,
+          from_industry_tag: s.industry_tag,
+        });
+      });
+    });
+
+    if (!suggestions.length) {
+      return res.status(200).json({
+        suggestions: [],
+        message: matched.length
+          ? '找到相近產業的文案，但尚未從中萃取出可用的痛點。'
+          : '文案手法庫中尚無相同或相近領域的已分析文案。',
+      });
+    }
+
+    return res.status(200).json({ suggestions: suggestions.slice(0, 10) });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
@@ -218,6 +326,8 @@ module.exports = async (req, res) => {
 
   if (action === 'suggest') return handleSuggest(req, res, user, profileId);
   if (action === 'extract') return handleExtract(req, res, user, profileId);
+  if (action === 'segments') return handleSegments(req, res, user, profileId);
+  if (action === 'from-swipe') return handleFromSwipe(req, res, user, profileId);
   if (!action) return dispatchDefault(req, res, user, profileId);
   return sendError(res, 400, '不支援的 action。');
 };
