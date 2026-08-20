@@ -41,7 +41,7 @@ async function loadProfiles(selectId) {
   const select = $('#profile-select');
   try {
     profilesCache = await api('/api/domain-profiles');
-    select.innerHTML = '<option value="">— 選擇領域設定 —</option>' +
+    select.innerHTML = '<option value="">— 選擇產品/服務設定 —</option>' +
       profilesCache.map(p => `<option value="${p.id}">${esc(p.domain_tag)}／${esc(p.audience)}</option>`).join('');
     if (selectId) select.value = selectId;
     updateProfileToolbar();
@@ -64,10 +64,14 @@ function setProfileFormMode(mode, profile) {
     form.audience.value = profile.audience;
     const radio = form.querySelector(`input[name="price_tier"][value="${profile.price_tier}"]`);
     if (radio) radio.checked = true;
-    submitBtn.textContent = '更新領域設定';
+    form.product_name.value = profile.product_name || '';
+    form.core_selling_point.value = profile.core_selling_point || '';
+    form.solution_description.value = profile.solution_description || '';
+    form.trust_proof.value = profile.trust_proof || '';
+    submitBtn.textContent = '更新產品／服務設定';
   } else {
     form.reset();
-    submitBtn.textContent = '建立領域設定';
+    submitBtn.textContent = '建立產品／服務設定';
   }
   form.hidden = false;
 }
@@ -93,11 +97,11 @@ $('#profile-edit-btn').onclick = () => {
 $('#profile-delete-btn').onclick = async () => {
   if (!currentProfileId) return;
   const profile = profilesCache.find(p => p.id === currentProfileId);
-  const label = profile ? `${profile.domain_tag}／${profile.audience}` : '這組領域設定';
+  const label = profile ? `${profile.domain_tag}／${profile.audience}` : '這組產品/服務設定';
   if (!confirm(`確定要刪除「${label}」嗎？此操作無法復原，若底下仍有痛點或語料可能會被拒絕刪除。`)) return;
   try {
     await api(`/api/domain-profiles?id=${currentProfileId}`, { method: 'DELETE' });
-    setStatus('已刪除領域設定。');
+    setStatus('已刪除產品/服務設定。');
     currentProfileId = null;
     await loadProfiles();
     onProfileSelected(null);
@@ -107,15 +111,15 @@ $('#profile-delete-btn').onclick = async () => {
 const clearAllBtn = $('#profile-clear-all-btn');
 if (clearAllBtn) {
   clearAllBtn.onclick = async () => {
-    if (!profilesCache.length) { setStatus('目前沒有任何領域設定紀錄。'); return; }
+    if (!profilesCache.length) { setStatus('目前沒有任何產品/服務設定紀錄。'); return; }
     const ok = confirm(
-      `確定要清空「所有」領域設定紀錄嗎？\n\n` +
-      `這會一併刪除所有領域設定底下的痛點、解決方案、語料歸類、洞察報告與文案生成紀錄，` +
-      `此操作無法復原。\n\n（尚未歸類到任何領域設定的語料、以及產業文案手法庫不會受影響。）`
+      `確定要清空「所有」產品/服務設定紀錄嗎？\n\n` +
+      `這會一併刪除所有產品/服務設定底下的痛點、解決方案、語料歸類、洞察報告與文案生成紀錄，` +
+      `此操作無法復原。\n\n（尚未歸類到任何產品/服務設定的語料、以及產業文案手法庫不會受影響。）`
     );
     if (!ok) return;
     clearAllBtn.disabled = true;
-    setStatus('正在清空所有領域設定紀錄…');
+    setStatus('正在清空所有產品/服務設定紀錄…');
     try {
       await api('/api/domain-profiles?action=clear-all', { method: 'DELETE' });
       currentProfileId = null;
@@ -124,7 +128,7 @@ if (clearAllBtn) {
       $('#profile-form').classList.remove('editing');
       await loadProfiles();
       onProfileSelected(null);
-      setStatus('已清空所有領域設定紀錄。');
+      setStatus('已清空所有產品/服務設定紀錄。');
     } catch (err) {
       setStatus('⚠ ' + err.message, true);
     } finally {
@@ -139,7 +143,7 @@ $('#profile-form').addEventListener('submit', async e => {
   try {
     if (editingProfileId) {
       const updated = await api(`/api/domain-profiles?id=${editingProfileId}`, { method: 'PATCH', body: JSON.stringify(data) });
-      setStatus('已更新領域設定。');
+      setStatus('已更新產品/服務設定。');
       e.target.hidden = true;
       editingProfileId = null;
       e.target.classList.remove('editing');
@@ -148,7 +152,7 @@ $('#profile-form').addEventListener('submit', async e => {
       return;
     }
     const profile = await api('/api/domain-profiles', { method: 'POST', body: JSON.stringify(data) });
-    setStatus('已建立領域設定。');
+    setStatus('已建立產品/服務設定。');
     e.target.reset();
     e.target.hidden = true;
     await loadProfiles(profile.id);
@@ -316,24 +320,30 @@ $('#extract-btn').onclick = async () => {
 };
 
 // ---------------- 痛點清單 ----------------
+// 解決方案改為在「產品／服務設定」填一次、套用到底下所有痛點，
+// 這裡只需顯示目前這組設定的解決方案（唯讀），不再需要每筆痛點各自新增/編輯/刪除解決方案。
 
 let painPointsCache = [];
-let solutionsCache = [];
 
 async function loadPainPoints() {
   try {
-    [painPointsCache, solutionsCache] = await Promise.all([
-      api(`/api/domain-profiles/${currentProfileId}/pain-points`),
-      api(`/api/domain-profiles/${currentProfileId}/solutions`),
-    ]);
+    painPointsCache = await api(`/api/domain-profiles/${currentProfileId}/pain-points`);
     renderPainList();
   } catch (e) { setStatus('⚠ ' + e.message, true); }
+}
+
+function currentProfileSolution() {
+  const profile = profilesCache.find(p => p.id === currentProfileId);
+  if (!profile || !profile.product_name || !profile.solution_description) return null;
+  return { product_name: profile.product_name, core_selling_point: profile.core_selling_point };
 }
 
 function renderPainList() {
   const list = $('#pain-list');
   if (!painPointsCache.length) { list.innerHTML = '<p class="muted">尚無痛點，請先匯入語料分析，或手動新增。</p>'; return; }
   list.innerHTML = '';
+  const solution = currentProfileSolution();
+
   painPointsCache.forEach(p => {
     const node = $('#pain-card-tpl').content.cloneNode(true);
     node.querySelector('.pc-surface').textContent = p.surface_problem;
@@ -357,77 +367,10 @@ function renderPainList() {
       ? `置信度 <span class="num">${Math.round(p.confidence_score * 100)}%</span>`
       : '置信度 <span class="num">—</span>';
 
-    const solution = solutionsCache.find(s => s.pain_point_id === p.id);
     const solutionEl = node.querySelector('.pc-solution');
-    const addBtn = node.querySelector('.pc-add-solution');
-    const solForm = node.querySelector('.pc-solution-form');
-    const solCancelBtn = solForm.querySelector('.sol-cancel');
-    const solDeleteBtn = solForm.querySelector('.sol-delete');
-    const solFields = {
-      product_name: solForm.querySelector('.sol-product_name'),
-      core_selling_point: solForm.querySelector('.sol-core_selling_point'),
-      solution_description: solForm.querySelector('.sol-solution_description'),
-      trust_proof: solForm.querySelector('.sol-trust_proof'),
-    };
-
-    if (solution) {
-      solutionEl.innerHTML = `<div class="framework-box" style="margin-top:10px"><b>${esc(solution.product_name)}</b> — ${esc(solution.core_selling_point)}</div>`;
-      addBtn.textContent = '編輯解決方案';
-      solDeleteBtn.hidden = false;
-    } else {
-      solutionEl.innerHTML = '';
-      addBtn.textContent = '＋ 解決方案';
-      solDeleteBtn.hidden = true;
-    }
-
-    addBtn.onclick = () => {
-      if (!solForm.hidden) { solForm.hidden = true; return; }
-      if (solution) {
-        solFields.product_name.value = solution.product_name || '';
-        solFields.core_selling_point.value = solution.core_selling_point || '';
-        solFields.solution_description.value = solution.solution_description || '';
-        solFields.trust_proof.value = solution.trust_proof || '';
-      } else {
-        solForm.reset();
-      }
-      solForm.hidden = false;
-    };
-    solCancelBtn.onclick = () => { solForm.hidden = true; };
-
-    solForm.addEventListener('submit', async e => {
-      e.preventDefault();
-      const body = {
-        pain_point_id: p.id,
-        product_name: solFields.product_name.value.trim(),
-        core_selling_point: solFields.core_selling_point.value.trim(),
-        solution_description: solFields.solution_description.value.trim(),
-        trust_proof: solFields.trust_proof.value.trim() || undefined,
-      };
-      try {
-        if (solution) {
-          await api(`/api/domain-profiles/${currentProfileId}/solutions?solution_id=${solution.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify(body),
-          });
-          setStatus('已更新解決方案。');
-        } else {
-          await api(`/api/domain-profiles/${currentProfileId}/solutions`, { method: 'POST', body: JSON.stringify(body) });
-          setStatus('已新增解決方案。');
-        }
-        await loadPainPoints();
-      } catch (err) { setStatus('⚠ ' + err.message, true); }
-    });
-
-    if (solution) {
-      solDeleteBtn.onclick = async () => {
-        if (!confirm('確定要移除這個解決方案嗎？移除後可以重新配對。')) return;
-        try {
-          await api(`/api/domain-profiles/${currentProfileId}/solutions?solution_id=${solution.id}`, { method: 'DELETE' });
-          setStatus('已移除解決方案。');
-          await loadPainPoints();
-        } catch (err) { setStatus('⚠ ' + err.message, true); }
-      };
-    }
+    solutionEl.innerHTML = solution
+      ? `<div class="framework-box" style="margin-top:10px"><b>${esc(solution.product_name)}</b>${solution.core_selling_point ? ' — ' + esc(solution.core_selling_point) : ''}</div>`
+      : '<p class="muted" style="margin-top:10px">尚未在「產品／服務設定」中填寫解決方案，請先到上方編輯設定。</p>';
 
     // 依目前狀態顯示對應的動作按鈕，避免出現「確認已確認的痛點」這種多餘操作。
     const confirmBtn = node.querySelector('.pc-confirm');
@@ -439,6 +382,18 @@ function renderPainList() {
     confirmBtn.onclick = () => reviewPainPoint(p.id, 'confirmed');
     rejectBtn.onclick = () => reviewPainPoint(p.id, 'rejected');
     restoreBtn.onclick = () => reviewPainPoint(p.id, 'unreviewed');
+
+    node.querySelector('.pc-delete').onclick = async () => {
+      if (!confirm(`確定要刪除「${p.surface_problem}」這筆痛點嗎？此操作無法復原。`)) return;
+      try {
+        await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
+          method: 'DELETE',
+          body: JSON.stringify({ pain_point_id: p.id }),
+        });
+        setStatus('已刪除痛點。');
+        await loadPainPoints();
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    };
 
     const editBtn = node.querySelector('.pc-edit');
     const editForm = node.querySelector('.pc-edit-form');
@@ -685,7 +640,7 @@ function sortReportPainPoints(points, sortKey) {
 function renderReportBreakdown(container, points, sortKey) {
   container.innerHTML = '';
   if (!points.length) {
-    container.innerHTML = '<p class="muted">此領域設定尚無痛點資料。</p>';
+    container.innerHTML = '<p class="muted">此產品/服務設定尚無痛點資料。</p>';
     return;
   }
   sortReportPainPoints(points, sortKey).forEach(p => {
@@ -744,8 +699,8 @@ function renderReport(report, meta) {
     ['已駁回', c.rejected, false],
     ['已配對解決方案', c.with_matched_solution, false],
     ['平均置信度', c.avg_confidence_score != null ? Math.round(c.avg_confidence_score * 100) + '%' : '—', false],
-    ['平均適配度', c.avg_fit_score != null ? Math.round(c.avg_fit_score * 100) + '%' : '—', false],
   ];
+
   const statGrid = node.querySelector('.r-stats');
   stats.forEach(([label, value, warn]) => {
     const cell = document.createElement('div');
