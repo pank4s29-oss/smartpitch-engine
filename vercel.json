@@ -1,16 +1,16 @@
 {
   "rewrites": [
-    { "source": "/api/domain-profiles/:id/pain-points", "destination": "/api/pain-points-hub?id=:id" },
     { "source": "/api/domain-profiles/:id/pain-points/suggest", "destination": "/api/pain-points-hub?id=:id&action=suggest" },
     { "source": "/api/domain-profiles/:id/pain-points/extract", "destination": "/api/pain-points-hub?id=:id&action=extract" },
+    { "source": "/api/domain-profiles/:id/pain-points", "destination": "/api/pain-points-hub?id=:id" },
     { "source": "/api/insight-reports", "destination": "/api/insight-reports-hub" },
     { "source": "/api/insight-reports/:id", "destination": "/api/insight-reports-hub?id=:id" },
     { "source": "/api/swipe-copies", "destination": "/api/swipe-copies-hub" },
     { "source": "/api/swipe-copies/:id", "destination": "/api/swipe-copies-hub?id=:id" },
-    { "source": "/api/raw-feedback", "destination": "/api/raw-feedback-hub" },
-    { "source": "/api/raw-feedback/:id", "destination": "/api/raw-feedback-hub?id=:id" },
+    { "source": "/api/raw-feedback/source-types/:id", "destination": "/api/raw-feedback-hub?action=source-types&id=:id" },
     { "source": "/api/raw-feedback/source-types", "destination": "/api/raw-feedback-hub?action=source-types" },
-    { "source": "/api/raw-feedback/source-types/:id", "destination": "/api/raw-feedback-hub?action=source-types&id=:id" }
+    { "source": "/api/raw-feedback/:id", "destination": "/api/raw-feedback-hub?id=:id" },
+    { "source": "/api/raw-feedback", "destination": "/api/raw-feedback-hub" }
   ],
   "functions": {
     "api/swipe-copies-hub.js": {
