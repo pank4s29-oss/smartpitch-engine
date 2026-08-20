@@ -55,6 +55,26 @@ module.exports = async (req, res) => {
     }
   }
 
+  if (req.method === 'DELETE' && (req.query || {}).action === 'clear-all') {
+    // 清空這個使用者名下「所有」領域設定與其關聯資料（痛點、解決方案、語料歸類、洞察報告、
+    // 文案生成紀錄）。依外鍵相依順序由子到父刪除，避免因約束擋下而失敗。
+    // 不影響：尚未歸類到任何領域設定的語料（domain_profile_id 為 null）、產業文案手法庫。
+    try {
+      await restRequest(`copy_blocks?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`copy_variants?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`generation_params?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`generation_requests?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`insight_reports?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`product_solutions?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`audience_pain_points?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`raw_customer_feedback?user_id=eq.${user.id}&domain_profile_id=not.is.null`, { method: 'DELETE' });
+      await restRequest(`domain_profiles?user_id=eq.${user.id}`, { method: 'DELETE' });
+      return res.status(200).json({ cleared: true });
+    } catch (err) {
+      return sendError(res, 500, `清空失敗，可能有資料未能刪除：${err.message}`);
+    }
+  }
+
   if (req.method === 'PATCH') {
     if (!id) return sendError(res, 400, '缺少 id。');
     const { domain_tag, audience, price_tier } = req.body || {};
