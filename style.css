@@ -293,6 +293,69 @@ details.panel[open] summary { margin-bottom: 16px; }
 
 ::selection { background: var(--evidence-bg); }
 
+/* ---------- 語料來源分類管理 ---------- */
+
+.label-manager { margin-bottom: 16px; }
+.label-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.label-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--teal-dark);
+  background: var(--evidence-bg); border: 1px solid var(--evidence);
+  border-radius: 999px; padding: 4px 6px 4px 12px;
+}
+.label-chip button {
+  border: none; background: none; color: var(--teal-dark);
+  padding: 0 4px; font-size: 13px; line-height: 1; cursor: pointer; border-radius: 50%;
+}
+.label-chip button:hover { background: rgba(24,38,32,0.12); }
+.label-add-row { display: flex; gap: 8px; }
+.label-add-row input { margin: 0; flex: 1; }
+.label-add-row button { flex-shrink: 0; white-space: nowrap; }
+
+/* ---------- 痛點卡片：編輯與還原 ---------- */
+
+.pc-edit-form, .pc-solution-form { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line-strong); }
+.pain-actions { flex-wrap: wrap; }
+
+/* ---------- 領域設定編輯模式 ---------- */
+
+#profile-form.editing { border-left: 3px solid var(--teal); padding-left: 14px; }
+
+/* ---------- 報告：逐項分析 ---------- */
+
+.report-detail-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 4px 0 14px; flex-wrap: wrap; }
+.report-detail-head h3 { font-size: 16px; }
+.sort-label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin: 0; white-space: nowrap; }
+.sort-label select { margin: 0; width: auto; padding: 6px 9px; font-size: 12.5px; }
+
+.report-row {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 10px; background: #fff;
+}
+.report-row-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+.report-row h4 { font-family: var(--font-display); font-size: 15px; font-weight: 600; }
+.report-row .deep-desire { font-size: 13px; margin-top: 3px; }
+
+.confidence-bar { height: 5px; background: var(--paper); border-radius: 3px; overflow: hidden; margin: 8px 0; }
+.confidence-bar-fill { height: 100%; background: var(--evidence); border-radius: 3px; }
+
+.rr-solution { font-size: 13px; margin-top: 8px; }
+.rr-solution .no-solution { color: var(--ink-soft); font-style: italic; }
+
+/* ---------- 產出報告動作列 ---------- */
+
+.step-actions { display: flex; gap: 8px; }
+
+/* ---------- 重複偵測提示 / 一般 confirm 對話樣式沿用瀏覽器原生 ---------- */
+
+@media print {
+  header, #auth-panel, #status, #composer-panel > .panel, #profile-scope > .panel:not(.report-panel-print-target),
+  details.swipe, .step-actions, .r-sort, .sort-label, #report-history, button { display: none !important; }
+  .report-panel { box-shadow: none; border: none; padding: 0; }
+  body { background: #fff; }
+  main { max-width: 100%; padding: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
