@@ -17,9 +17,16 @@ function round2(n) {
   return n === null || n === undefined ? null : Math.round(n * 100) / 100;
 }
 
-async function buildReport(profile, painPoints, solutions) {
+async function buildReport(profile, painPoints) {
+  // 解決方案改為在「產品／服務設定」填寫一次，套用到底下所有痛點——
+  // 只要產品名稱與解決方案說明都有填，就視為每一筆痛點都已配對到解決方案。
+  const hasSolution = !!(profile.product_name && profile.solution_description);
+  const solutionSummary = hasSolution ? {
+    product_name: profile.product_name,
+    core_selling_point: profile.core_selling_point,
+  } : null;
+
   const pairs = painPoints.map(p => {
-    const solution = solutions.find(s => s.pain_point_id === p.id) || null;
     const evidenceCount = Array.isArray(p.evidence_source) ? p.evidence_source.length : 0;
     return {
       pain_point_id: p.id,
@@ -29,11 +36,7 @@ async function buildReport(profile, painPoints, solutions) {
       review_status: p.review_status || 'unreviewed',
       confidence_score: round2(p.confidence_score),
       evidence_count: evidenceCount,
-      solution: solution ? {
-        product_name: solution.product_name,
-        core_selling_point: solution.core_selling_point,
-        fit_score: round2(solution.fit_score),
-      } : null,
+      solution: solutionSummary,
     };
   });
 
@@ -42,20 +45,20 @@ async function buildReport(profile, painPoints, solutions) {
   const confirmed = pairs.filter(p => p.review_status === 'confirmed' || p.review_status === 'edited').length;
   const unreviewed = pairs.filter(p => p.review_status === 'unreviewed').length;
   const rejected = pairs.filter(p => p.review_status === 'rejected').length;
-  const withSolution = pairs.filter(p => p.solution).length;
+  const withSolution = hasSolution ? total : 0;
   const confidenceValues = pairs.map(p => p.confidence_score).filter(v => v !== null);
   const avgConfidence = confidenceValues.length
     ? round2(confidenceValues.reduce((a, b) => a + b, 0) / confidenceValues.length)
     : null;
-  const fitValues = pairs.map(p => p.solution && p.solution.fit_score).filter(v => v !== null && v !== undefined);
-  const avgFit = fitValues.length ? round2(fitValues.reduce((a, b) => a + b, 0) / fitValues.length) : null;
+  // fit_score 是舊版「每個痛點各自配對解決方案」時才有意義的指標，現在解決方案是全域套用，不再適用。
+  const avgFit = null;
 
   const riskFlags = [];
   if (isSensitiveIndustry(profile.domain_tag)) {
     riskFlags.push('屬敏感產業（醫療／金融等），任何對外文案或主張建議先經人工複核。');
   }
   if (total === 0) {
-    riskFlags.push('此領域設定尚未建立任何受眾痛點，報告僅能顯示空白結果，建議先匯入語料或手動新增痛點。');
+    riskFlags.push('此產品/服務設定尚未建立任何受眾痛點，報告僅能顯示空白結果，建議先匯入語料或手動新增痛點。');
   } else {
     if (withEvidence / total < 0.34) {
       riskFlags.push(`目前僅 ${withEvidence}/${total} 筆痛點有真實語料佐證，多數仍屬 AI 推測或手動輸入，建議優先補充顧客語料以提高可信度。`);
@@ -63,8 +66,8 @@ async function buildReport(profile, painPoints, solutions) {
     if (unreviewed / total > 0.5) {
       riskFlags.push(`有 ${unreviewed}/${total} 筆痛點尚未經過人工複核，建議先確認（confirmed）再作為決策依據。`);
     }
-    if (withSolution / total < 0.5) {
-      riskFlags.push(`僅 ${withSolution}/${total} 筆痛點已配對解決方案，尚未配對的痛點無法納入下一步的內容或產品規劃。`);
+    if (!hasSolution) {
+      riskFlags.push('尚未在「產品／服務設定」中填寫解決方案說明，目前所有痛點都還沒有對應的解決方案，無法納入下一步的內容或產品規劃。');
     }
   }
 
@@ -111,12 +114,11 @@ async function handleCreate(req, res, user) {
 
   try {
     const [profile] = await restRequest(`domain_profiles?id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
-    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+    if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
 
     const painPoints = await restRequest(`audience_pain_points?domain_profile_id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
-    const solutions = await restRequest(`product_solutions?domain_profile_id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
 
-    const report = await buildReport(profile, painPoints, solutions);
+    const report = await buildReport(profile, painPoints);
 
     // AI 導讀是加分項，不是必要項：失敗就標記 narrative 為 null，整份報告依然完整回傳。
     try {
