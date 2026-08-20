@@ -5,7 +5,10 @@ const { getUserFromRequest, restRequest, sendError } = require('./_lib/supabase'
 //   DELETE    /api/raw-feedback/:id  (有 id)
 // 對應的 vercel.json rewrites 會把兩個路徑都導到這支檔案，前端網址不需要改。
 
-const VALID_SOURCE_TYPES = ['review', 'support_chat', 'survey', 'interview_transcript', 'social_comment', 'other'];
+// 語料來源分類改為使用者自訂（原本是寫死的 6 種），這幾個是首次使用時自動帶入的預設值，
+// 之後使用者可以自由新增／刪除，順序以「社群貼文分享」排最前面，對應主要蒐集來源。
+const DEFAULT_LABELS = ['社群貼文分享', '顧客評論', '客服對話', '問卷回饋', '訪談逐字稿', '其他'];
+const MAX_LABEL_LENGTH = 20;
 const MAX_TEXT_LENGTH = 5000;
 const MAX_BATCH_SIZE = 50;
 
@@ -26,9 +29,9 @@ async function handleList(req, res, user) {
 async function handleCreate(req, res, user) {
   const { domain_profile_id, source_type, raw_text, raw_texts } = req.body || {};
 
-  if (!source_type || !VALID_SOURCE_TYPES.includes(source_type)) {
-    return sendError(res, 400, `請提供有效的語料來源類型（${VALID_SOURCE_TYPES.join('、')} 其中之一）。`);
-  }
+  const sourceType = (source_type || '').trim();
+  if (!sourceType) return sendError(res, 400, '請選擇語料來源分類。');
+  if (sourceType.length > MAX_LABEL_LENGTH) return sendError(res, 400, `分類名稱不可超過 ${MAX_LABEL_LENGTH} 字。`);
 
   const texts = (Array.isArray(raw_texts) ? raw_texts : [raw_text])
     .filter(t => typeof t === 'string' && t.trim())
@@ -48,7 +51,7 @@ async function handleCreate(req, res, user) {
     const rows = texts.map(raw_text => ({
       user_id: user.id,
       domain_profile_id: domain_profile_id || null,
-      source_type,
+      source_type: sourceType,
       raw_text,
     }));
 
@@ -74,11 +77,66 @@ async function handleDelete(req, res, user, id) {
   }
 }
 
+// ---- 語料來源分類管理 ----
+
+async function handleListLabels(req, res, user) {
+  try {
+    let labels = await restRequest(`feedback_source_labels?user_id=eq.${user.id}&select=*&order=sort_order.asc,created_at.asc`);
+    if (!labels.length) {
+      // 第一次使用，帶入預設分類，之後使用者可自由增刪。
+      const rows = DEFAULT_LABELS.map((label, i) => ({ user_id: user.id, label, sort_order: i }));
+      labels = await restRequest('feedback_source_labels', { method: 'POST', prefer: 'return=representation', body: rows });
+      labels.sort((a, b) => a.sort_order - b.sort_order);
+    }
+    return res.status(200).json(labels);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+async function handleCreateLabel(req, res, user) {
+  const label = (req.body && req.body.label || '').trim();
+  if (!label) return sendError(res, 400, '請輸入分類名稱。');
+  if (label.length > MAX_LABEL_LENGTH) return sendError(res, 400, `分類名稱不可超過 ${MAX_LABEL_LENGTH} 字。`);
+  try {
+    const existing = await restRequest(`feedback_source_labels?user_id=eq.${user.id}&label=eq.${encodeURIComponent(label)}&select=id`);
+    if (existing.length) return sendError(res, 409, '這個分類已經存在。');
+    const countRes = await restRequest(`feedback_source_labels?user_id=eq.${user.id}&select=sort_order&order=sort_order.desc&limit=1`);
+    const nextOrder = countRes.length ? countRes[0].sort_order + 1 : 0;
+    const [saved] = await restRequest('feedback_source_labels', {
+      method: 'POST', prefer: 'return=representation', body: { user_id: user.id, label, sort_order: nextOrder },
+    });
+    return res.status(200).json(saved);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+async function handleDeleteLabel(req, res, user, id) {
+  try {
+    await restRequest(`feedback_source_labels?id=eq.${id}&user_id=eq.${user.id}`, { method: 'DELETE' });
+    return res.status(200).json({ deleted: true });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
 
-  const { id } = req.query || {};
+  const { id, action } = req.query || {};
+
+  if (action === 'source-types') {
+    if (id) {
+      if (req.method !== 'DELETE') return sendError(res, 405, '不支援的方法。');
+      return handleDeleteLabel(req, res, user, id);
+    }
+    if (req.method === 'GET') return handleListLabels(req, res, user);
+    if (req.method === 'POST') return handleCreateLabel(req, res, user);
+    return sendError(res, 405, '不支援的方法。');
+  }
+
   if (id) {
     if (req.method !== 'DELETE') return sendError(res, 405, '不支援的方法。');
     return handleDelete(req, res, user, id);
