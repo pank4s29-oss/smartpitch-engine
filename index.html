@@ -31,13 +31,13 @@
 <section id="composer-panel">
 
 <section class="panel">
-<div class="step-heading"><b>01</b><div><h2>領域設定</h2><p>選擇既有的受眾研究，或建立新的一組。</p></div></div>
+<div class="step-heading"><b>01</b><div><h2>產品／服務設定</h2><p>選擇既有的產品／服務設定，或建立新的一組——不同產品或服務請分開建立，各自產生對應的痛點與受眾分析。</p></div></div>
 <div class="profile-select-row">
-<select id="profile-select"><option value="">— 選擇領域設定 —</option></select>
+<select id="profile-select"><option value="">— 選擇產品／服務設定 —</option></select>
 <button type="button" id="profile-edit-btn" class="ghost small" disabled>編輯</button>
 <button type="button" id="profile-delete-btn" class="danger small" disabled>刪除</button>
 <button type="button" id="new-profile-toggle" class="ghost small">＋ 新建</button>
-<button type="button" id="profile-clear-all-btn" class="danger small" style="margin-left:auto">清空所有領域設定紀錄</button>
+<button type="button" id="profile-clear-all-btn" class="danger small" style="margin-left:auto">清空所有產品／服務設定紀錄</button>
 </div>
 <form id="profile-form" hidden>
 <div class="grid">
@@ -48,7 +48,15 @@
 <label class="choice"><input type="radio" name="price_tier" value="low" checked> 低單價／快速決策</label>
 <label class="choice"><input type="radio" name="price_tier" value="high"> 高客單／建立信任</label>
 </fieldset>
-<button type="submit" id="profile-form-submit">建立領域設定</button>
+<hr class="divider">
+<p class="muted" style="margin-bottom:14px">以下解決方案只需要填一次，會套用到這組設定底下的所有痛點，不用每個痛點各自重填。</p>
+<div class="grid">
+<label>產品／服務名稱<input name="product_name" placeholder="例：居家彈力帶訓練課程" required></label>
+<label>核心賣點（選填）<input name="core_selling_point" placeholder="例：每天 15 分鐘、免上健身房"></label>
+</div>
+<label>解決方案說明<textarea name="solution_description" required placeholder="具體說明這個產品／服務如何解決上面設定的受眾痛點"></textarea></label>
+<label>信任背書（選填）<input name="trust_proof" placeholder="例：3000+ 學員實測、專業教練設計"></label>
+<button type="submit" id="profile-form-submit">建立產品／服務設定</button>
 <button type="button" id="profile-form-cancel" class="ghost">取消</button>
 </form>
 </section>
@@ -143,9 +151,9 @@
 <div class="pain-actions">
 <button class="small secondary pc-confirm">確認</button>
 <button class="small ghost pc-edit">編輯</button>
-<button class="small ghost pc-add-solution">＋ 解決方案</button>
 <button class="small danger pc-reject">駁回</button>
 <button class="small ghost pc-restore" hidden>還原為未複核</button>
+<button class="small danger ghost pc-delete">刪除</button>
 </div>
 <form class="pc-edit-form" hidden>
 <label>表層問題<input class="edit-surface_problem" required></label>
@@ -154,17 +162,6 @@
 <div class="pain-actions">
 <button type="submit" class="small">儲存修改</button>
 <button type="button" class="small ghost pc-edit-cancel">取消</button>
-</div>
-</form>
-<form class="pc-solution-form" hidden>
-<label>產品／服務名稱<input class="sol-product_name" required></label>
-<label>核心賣點<input class="sol-core_selling_point" required></label>
-<label>如何解決這個痛點<textarea class="sol-solution_description" required></textarea></label>
-<label>信任背書（選填）<input class="sol-trust_proof"></label>
-<div class="pain-actions">
-<button type="submit" class="small">儲存</button>
-<button type="button" class="small ghost sol-cancel">取消</button>
-<button type="button" class="small danger ghost sol-delete" hidden>移除解決方案</button>
 </div>
 </form>
 </article>
