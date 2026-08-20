@@ -45,7 +45,7 @@ async function handleCreate(req, res, user) {
   try {
     if (domain_profile_id) {
       const owned = await restRequest(`domain_profiles?id=eq.${domain_profile_id}&user_id=eq.${user.id}&select=id`);
-      if (!owned.length) return sendError(res, 404, '找不到對應的領域設定。');
+      if (!owned.length) return sendError(res, 404, '找不到對應的產品/服務設定。');
     }
 
     const rows = texts.map(raw_text => ({
