@@ -104,32 +104,34 @@ $('#profile-delete-btn').onclick = async () => {
   } catch (err) { setStatus('⚠ ' + err.message, true); }
 };
 
-$('#profile-clear-all-btn').onclick = async () => {
-  if (!profilesCache.length) { setStatus('目前沒有任何領域設定紀錄。'); return; }
-  const ok = confirm(
-    `確定要清空「所有」領域設定紀錄嗎？\n\n` +
-    `這會一併刪除所有領域設定底下的痛點、解決方案、語料歸類、洞察報告與文案生成紀錄，` +
-    `此操作無法復原。\n\n（尚未歸類到任何領域設定的語料、以及產業文案手法庫不會受影響。）`
-  );
-  if (!ok) return;
-  const btn = $('#profile-clear-all-btn');
-  btn.disabled = true;
-  setStatus('正在清空所有領域設定紀錄…');
-  try {
-    await api('/api/domain-profiles?action=clear-all', { method: 'DELETE' });
-    currentProfileId = null;
-    editingProfileId = null;
-    $('#profile-form').hidden = true;
-    $('#profile-form').classList.remove('editing');
-    await loadProfiles();
-    onProfileSelected(null);
-    setStatus('已清空所有領域設定紀錄。');
-  } catch (err) {
-    setStatus('⚠ ' + err.message, true);
-  } finally {
-    btn.disabled = false;
-  }
-};
+const clearAllBtn = $('#profile-clear-all-btn');
+if (clearAllBtn) {
+  clearAllBtn.onclick = async () => {
+    if (!profilesCache.length) { setStatus('目前沒有任何領域設定紀錄。'); return; }
+    const ok = confirm(
+      `確定要清空「所有」領域設定紀錄嗎？\n\n` +
+      `這會一併刪除所有領域設定底下的痛點、解決方案、語料歸類、洞察報告與文案生成紀錄，` +
+      `此操作無法復原。\n\n（尚未歸類到任何領域設定的語料、以及產業文案手法庫不會受影響。）`
+    );
+    if (!ok) return;
+    clearAllBtn.disabled = true;
+    setStatus('正在清空所有領域設定紀錄…');
+    try {
+      await api('/api/domain-profiles?action=clear-all', { method: 'DELETE' });
+      currentProfileId = null;
+      editingProfileId = null;
+      $('#profile-form').hidden = true;
+      $('#profile-form').classList.remove('editing');
+      await loadProfiles();
+      onProfileSelected(null);
+      setStatus('已清空所有領域設定紀錄。');
+    } catch (err) {
+      setStatus('⚠ ' + err.message, true);
+    } finally {
+      clearAllBtn.disabled = false;
+    }
+  };
+}
 
 $('#profile-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -174,7 +176,8 @@ function onProfileSelected(id) {
   if (!id) { scope.hidden = true; return; }
   scope.hidden = false;
   $('#report-result').hidden = true;
-  $('#suggest-preview').innerHTML = '';
+  const suggestPreview = $('#suggest-preview');
+  if (suggestPreview) suggestPreview.innerHTML = '';
   resetSegmentsPanel();
   refreshProfileScope();
 }
@@ -515,56 +518,58 @@ $('#suggest-btn').onclick = async () => {
 // 從產業文案手法庫中，找出與目前領域相同或相近、且已萃取出痛點的範例文案，
 // 把裡面的受眾痛點列成草稿讓使用者一鍵帶入——邏輯與「AI 建議草稿」相同（草稿不直接寫入），
 // 差別是這裡的草稿來自真實廣告文案的萃取結果。共用同一個 #suggest-preview 預覽區。
-$('#swipe-import-btn').onclick = async () => {
-  if (!currentProfileId) return;
-  const btn = $('#swipe-import-btn');
-  btn.disabled = true;
-  setStatus('正在比對文案手法庫中相同／相近領域的痛點…');
-  try {
-    const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/from-swipe`);
-    const suggestions = result.suggestions || [];
-    const preview = $('#suggest-preview');
-    preview.innerHTML = '';
-    if (!suggestions.length) {
-      setStatus(result.message || '文案手法庫中尚無可帶入的痛點。');
-      return;
-    }
-    suggestions.forEach(s => {
-      const row = document.createElement('div');
-      row.className = 'pain-card';
-      row.innerHTML = `
-        <div class="pain-card-top">
-          <div><h3>${esc(s.surface_problem)}</h3><p class="deep-desire">${esc(s.deep_desire)}</p></div>
-          <span class="stamp unreviewed">來自文案庫．${esc(s.from_industry_tag)}</span>
-        </div>
-        ${s.detail ? `<div class="pain-quote">${esc(s.detail)}</div>` : ''}`;
-      const addBtn = document.createElement('button');
-      addBtn.className = 'small secondary';
-      addBtn.textContent = '加入痛點清單';
-      addBtn.style.marginTop = '10px';
-      addBtn.onclick = async () => {
-        addBtn.disabled = true;
-        try {
-          await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
-            method: 'POST',
-            body: JSON.stringify({
-              surface_problem: s.surface_problem,
-              deep_desire: s.deep_desire,
-              detail: s.detail || undefined,
-              source: 'swipe_import',
-            }),
-          });
-          row.remove();
-          await loadPainPoints();
-        } catch (err) { setStatus('⚠ ' + err.message, true); addBtn.disabled = false; }
-      };
-      row.append(addBtn);
-      preview.append(row);
-    });
-    setStatus(`從文案手法庫找到 ${suggestions.length} 組相近痛點草稿，請逐一確認是否加入清單。`);
-  } catch (err) { setStatus('⚠ ' + err.message, true); }
-  finally { btn.disabled = false; }
-};
+const swipeImportBtn = $('#swipe-import-btn');
+if (swipeImportBtn) {
+  swipeImportBtn.onclick = async () => {
+    if (!currentProfileId) return;
+    swipeImportBtn.disabled = true;
+    setStatus('正在比對文案手法庫中相同／相近領域的痛點…');
+    try {
+      const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/from-swipe`);
+      const suggestions = result.suggestions || [];
+      const preview = $('#suggest-preview');
+      if (preview) preview.innerHTML = '';
+      if (!suggestions.length) {
+        setStatus(result.message || '文案手法庫中尚無可帶入的痛點。');
+        return;
+      }
+      suggestions.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'pain-card';
+        row.innerHTML = `
+          <div class="pain-card-top">
+            <div><h3>${esc(s.surface_problem)}</h3><p class="deep-desire">${esc(s.deep_desire)}</p></div>
+            <span class="stamp unreviewed">來自文案庫．${esc(s.from_industry_tag)}</span>
+          </div>
+          ${s.detail ? `<div class="pain-quote">${esc(s.detail)}</div>` : ''}`;
+        const addBtn = document.createElement('button');
+        addBtn.className = 'small secondary';
+        addBtn.textContent = '加入痛點清單';
+        addBtn.style.marginTop = '10px';
+        addBtn.onclick = async () => {
+          addBtn.disabled = true;
+          try {
+            await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
+              method: 'POST',
+              body: JSON.stringify({
+                surface_problem: s.surface_problem,
+                deep_desire: s.deep_desire,
+                detail: s.detail || undefined,
+                source: 'swipe_import',
+              }),
+            });
+            row.remove();
+            await loadPainPoints();
+          } catch (err) { setStatus('⚠ ' + err.message, true); addBtn.disabled = false; }
+        };
+        row.append(addBtn);
+        if (preview) preview.append(row);
+      });
+      setStatus(`從文案手法庫找到 ${suggestions.length} 組相近痛點草稿，請逐一確認是否加入清單。`);
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { swipeImportBtn.disabled = false; }
+  };
+}
 
 $('#manual-pain-form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -594,6 +599,7 @@ function resetSegmentsPanel() {
 
 function renderSegments(result) {
   const container = $('#segments-result');
+  if (!container) return;
   const segments = result.segments || [];
 
   if (!segments.length) {
@@ -636,22 +642,24 @@ function renderSegments(result) {
   });
 }
 
-$('#segments-btn').onclick = async () => {
-  if (!currentProfileId) return;
-  const btn = $('#segments-btn');
-  btn.disabled = true;
-  setStatus('正在根據目前的痛點清單反推潛在受眾族群…');
-  try {
-    const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`);
-    renderSegments(result);
-    setStatus(
-      result.segments && result.segments.length
-        ? `分析出 ${result.segments.length} 個潛在受眾族群（依據 ${result.based_on_count} 筆痛點）。`
-        : (result.message || '尚未反推出有區別度的受眾族群。')
-    );
-  } catch (err) { setStatus('⚠ ' + err.message, true); }
-  finally { btn.disabled = false; }
-};
+const segmentsBtn = $('#segments-btn');
+if (segmentsBtn) {
+  segmentsBtn.onclick = async () => {
+    if (!currentProfileId) return;
+    segmentsBtn.disabled = true;
+    setStatus('正在根據目前的痛點清單反推潛在受眾族群…');
+    try {
+      const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`);
+      renderSegments(result);
+      setStatus(
+        result.segments && result.segments.length
+          ? `分析出 ${result.segments.length} 個潛在受眾族群（依據 ${result.based_on_count} 筆痛點）。`
+          : (result.message || '尚未反推出有區別度的受眾族群。')
+      );
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { segmentsBtn.disabled = false; }
+  };
+}
 
 // ---------------- 洞察報告 ----------------
 
