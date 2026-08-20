@@ -32,6 +32,7 @@ async function buildReport(profile, painPoints) {
       pain_point_id: p.id,
       surface_problem: p.surface_problem,
       deep_desire: p.deep_desire,
+      detail: p.detail || null,
       source: p.source,
       review_status: p.review_status || 'unreviewed',
       confidence_score: round2(p.confidence_score),
