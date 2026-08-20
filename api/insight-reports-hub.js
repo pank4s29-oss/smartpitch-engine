@@ -148,6 +148,19 @@ async function handleGet(req, res, user, id) {
   }
 }
 
+// 列出某個領域設定過去產出的報告（不含 id 時用 ?domain_profile_id= 篩選），供「歷史報告」列表使用。
+async function handleList(req, res, user) {
+  const { domain_profile_id } = req.query || {};
+  try {
+    let query = `insight_reports?user_id=eq.${user.id}&select=id,domain_profile_id,status,created_at,coverage:report->coverage&order=created_at.desc&limit=20`;
+    if (domain_profile_id) query += `&domain_profile_id=eq.${domain_profile_id}`;
+    const items = await restRequest(query);
+    return res.status(200).json(items);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
@@ -157,6 +170,7 @@ module.exports = async (req, res) => {
     if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
     return handleGet(req, res, user, id);
   }
+  if (req.method === 'GET') return handleList(req, res, user);
   if (req.method !== 'POST') return sendError(res, 405, '不支援的方法。');
   return handleCreate(req, res, user);
 };
