@@ -37,6 +37,7 @@
 <button type="button" id="profile-edit-btn" class="ghost small" disabled>編輯</button>
 <button type="button" id="profile-delete-btn" class="danger small" disabled>刪除</button>
 <button type="button" id="new-profile-toggle" class="ghost small">＋ 新建</button>
+<button type="button" id="profile-clear-all-btn" class="danger small" style="margin-left:auto">清空所有領域設定紀錄</button>
 </div>
 <form id="profile-form" hidden>
 <div class="grid">
@@ -68,7 +69,7 @@
 </section>
 
 <section class="panel">
-<div class="step-heading"><b>03</b><div><h2>痛點清單</h2><p>每筆痛點的置信度來自「有多少語料佐證」，不是 AI 自己打的分數。</p><div class="step-actions"><button type="button" id="suggest-btn" class="ghost small">AI 建議草稿</button></div></div></div>
+<div class="step-heading"><b>03</b><div><h2>痛點清單</h2><p>每筆痛點的置信度來自「有多少語料佐證」，不是 AI 自己打的分數。</p><div class="step-actions"><button type="button" id="swipe-import-btn" class="ghost small">從文案手法庫帶入</button><button type="button" id="suggest-btn" class="ghost small">AI 建議草稿</button></div></div></div>
 <div id="suggest-preview"></div>
 <form id="manual-pain-form">
 <div class="grid">
@@ -83,7 +84,12 @@
 </section>
 
 <section class="panel">
-<div class="step-heading"><b>04</b><div><h2>產出洞察報告</h2><p>彙整目前所有痛點的驗證狀態、覆蓋率與風險提示。</p></div></div>
+<div class="step-heading"><b>04</b><div><h2>潛在受眾地圖</h2><p>反推目前的痛點清單背後，可能存在哪些沒被明講、但真實存在的細分受眾。</p><div class="step-actions"><button type="button" id="segments-btn" class="ghost small">分析潛在受眾 →</button></div></div></div>
+<div id="segments-result"><p class="muted">尚未分析。點擊「分析潛在受眾」，系統會根據目前的痛點清單（已駁回者不計入）反推可能的受眾族群。</p></div>
+</section>
+
+<section class="panel">
+<div class="step-heading"><b>05</b><div><h2>產出洞察報告</h2><p>彙整目前所有痛點的驗證狀態、覆蓋率與風險提示。</p></div></div>
 <button type="button" id="generate-report-btn">產出報告 →</button>
 <div id="report-history" class="muted" style="margin-top:14px"></div>
 </section>
