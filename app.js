@@ -96,7 +96,7 @@ $('#profile-delete-btn').onclick = async () => {
   const label = profile ? `${profile.domain_tag}／${profile.audience}` : '這組領域設定';
   if (!confirm(`確定要刪除「${label}」嗎？此操作無法復原，若底下仍有痛點或語料可能會被拒絕刪除。`)) return;
   try {
-    await api(`/api/domain-profiles/${currentProfileId}`, { method: 'DELETE' });
+    await api(`/api/domain-profiles?id=${currentProfileId}`, { method: 'DELETE' });
     setStatus('已刪除領域設定。');
     currentProfileId = null;
     await loadProfiles();
@@ -329,26 +329,72 @@ function renderPainList() {
     const solutionEl = node.querySelector('.pc-solution');
     const addBtn = node.querySelector('.pc-add-solution');
     const solForm = node.querySelector('.pc-solution-form');
+    const solCancelBtn = solForm.querySelector('.sol-cancel');
+    const solDeleteBtn = solForm.querySelector('.sol-delete');
+    const solFields = {
+      product_name: solForm.querySelector('.sol-product_name'),
+      core_selling_point: solForm.querySelector('.sol-core_selling_point'),
+      solution_description: solForm.querySelector('.sol-solution_description'),
+      trust_proof: solForm.querySelector('.sol-trust_proof'),
+    };
+
     if (solution) {
       solutionEl.innerHTML = `<div class="framework-box" style="margin-top:10px"><b>${esc(solution.product_name)}</b> — ${esc(solution.core_selling_point)}</div>`;
-      addBtn.hidden = true;
+      addBtn.textContent = '編輯解決方案';
+      solDeleteBtn.hidden = false;
     } else {
-      addBtn.onclick = () => { solForm.hidden = !solForm.hidden; };
-      solForm.addEventListener('submit', async e => {
-        e.preventDefault();
-        const body = {
-          pain_point_id: p.id,
-          product_name: solForm.querySelector('.sol-product_name').value.trim(),
-          core_selling_point: solForm.querySelector('.sol-core_selling_point').value.trim(),
-          solution_description: solForm.querySelector('.sol-solution_description').value.trim(),
-          trust_proof: solForm.querySelector('.sol-trust_proof').value.trim() || undefined,
-        };
-        try {
+      solutionEl.innerHTML = '';
+      addBtn.textContent = '＋ 解決方案';
+      solDeleteBtn.hidden = true;
+    }
+
+    addBtn.onclick = () => {
+      if (!solForm.hidden) { solForm.hidden = true; return; }
+      if (solution) {
+        solFields.product_name.value = solution.product_name || '';
+        solFields.core_selling_point.value = solution.core_selling_point || '';
+        solFields.solution_description.value = solution.solution_description || '';
+        solFields.trust_proof.value = solution.trust_proof || '';
+      } else {
+        solForm.reset();
+      }
+      solForm.hidden = false;
+    };
+    solCancelBtn.onclick = () => { solForm.hidden = true; };
+
+    solForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const body = {
+        pain_point_id: p.id,
+        product_name: solFields.product_name.value.trim(),
+        core_selling_point: solFields.core_selling_point.value.trim(),
+        solution_description: solFields.solution_description.value.trim(),
+        trust_proof: solFields.trust_proof.value.trim() || undefined,
+      };
+      try {
+        if (solution) {
+          await api(`/api/domain-profiles/${currentProfileId}/solutions?solution_id=${solution.id}`, {
+            method: 'PATCH',
+            body: JSON.stringify(body),
+          });
+          setStatus('已更新解決方案。');
+        } else {
           await api(`/api/domain-profiles/${currentProfileId}/solutions`, { method: 'POST', body: JSON.stringify(body) });
           setStatus('已新增解決方案。');
+        }
+        await loadPainPoints();
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    });
+
+    if (solution) {
+      solDeleteBtn.onclick = async () => {
+        if (!confirm('確定要移除這個解決方案嗎？移除後可以重新配對。')) return;
+        try {
+          await api(`/api/domain-profiles/${currentProfileId}/solutions?solution_id=${solution.id}`, { method: 'DELETE' });
+          setStatus('已移除解決方案。');
           await loadPainPoints();
         } catch (err) { setStatus('⚠ ' + err.message, true); }
-      });
+      };
     }
 
     // 依目前狀態顯示對應的動作按鈕，避免出現「確認已確認的痛點」這種多餘操作。
