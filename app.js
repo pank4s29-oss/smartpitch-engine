@@ -16,7 +16,13 @@ const api = async (url, opts = {}) => {
   let j;
   try { j = text ? JSON.parse(text) : {}; }
   catch (e) { throw Error(`伺服器回應非預期格式（HTTP ${r.status}），可能是執行逾時或平台層錯誤：${text.slice(0, 150)}`); }
-  if (!r.ok) throw Error(j.error || '發生錯誤');
+  if (!r.ok) {
+    // 把錯誤回應裡的其他欄位（例如重複偵測用的 duplicate / existing_id）一併保留在 Error 物件上，
+    // 讓呼叫端可以依情況做不同處理，而不只是顯示一句錯誤文字。
+    const err = Error(j.error || '發生錯誤');
+    Object.assign(err, j);
+    throw err;
+  }
   return j;
 };
 
