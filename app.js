@@ -4,6 +4,10 @@ const status = $('#status') || (() => { const el = document.createElement('secti
 
 const esc = value => String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
 
+// 產品/服務設定的顯示格式：以產品名稱為主，後面用斜線接領域，方便在下拉選單中一眼認出是哪個產品。
+// 舊資料若沒有 product_name（理論上不會發生，但保底），退回原本的 domain_tag／audience 格式。
+const profileLabel = p => (p && p.product_name) ? `${p.product_name}／${p.domain_tag}` : `${p.domain_tag}／${p.audience}`;
+
 const SOURCE_LABEL = { user_input: '手動輸入', ai_suggested: 'AI 建議', raw_feedback_extraction: '語料萃取', swipe_import: '文案手法庫帶入' };
 const STAMP_LABEL = { unreviewed: '未複核', confirmed: '已確認', edited: '已確認．已修改', rejected: '已駁回' };
 const SOURCE_TYPE_LABEL = { review: '顧客評論', support_chat: '客服對話', survey: '問卷回饋', interview_transcript: '訪談逐字稿', social_comment: '社群留言', other: '其他' };
@@ -42,7 +46,7 @@ async function loadProfiles(selectId) {
   try {
     profilesCache = await api('/api/domain-profiles');
     select.innerHTML = '<option value="">— 選擇產品/服務設定 —</option>' +
-      profilesCache.map(p => `<option value="${p.id}">${esc(p.domain_tag)}／${esc(p.audience)}</option>`).join('');
+      profilesCache.map(p => `<option value="${p.id}">${esc(profileLabel(p))}</option>`).join('');
     if (selectId) select.value = selectId;
     updateProfileToolbar();
   } catch (e) { setStatus('⚠ ' + e.message, true); }
@@ -97,7 +101,7 @@ $('#profile-edit-btn').onclick = () => {
 $('#profile-delete-btn').onclick = async () => {
   if (!currentProfileId) return;
   const profile = profilesCache.find(p => p.id === currentProfileId);
-  const label = profile ? `${profile.domain_tag}／${profile.audience}` : '這組產品/服務設定';
+  const label = profile ? profileLabel(profile) : '這組產品/服務設定';
   if (!confirm(`確定要刪除「${label}」嗎？此操作無法復原，若底下仍有痛點或語料可能會被拒絕刪除。`)) return;
   try {
     await api(`/api/domain-profiles?id=${currentProfileId}`, { method: 'DELETE' });
@@ -338,92 +342,123 @@ function currentProfileSolution() {
   return { product_name: profile.product_name, core_selling_point: profile.core_selling_point };
 }
 
+// 痛點的「來源分組」：文案手法庫帶入的痛點跟使用者自己蒐集/手動建立的痛點分開顯示，
+// 避免兩種來源（一個是別人廣告文案裡歸納出來的手法參考，一個是自己顧客的真實聲音）混在一起，
+// 誤把「別人的手法猜測」當成「自己顧客的第一手證據」來判斷可信度。
+const SWIPE_SOURCE = 'swipe_import';
+const PAIN_GROUPS = [
+  { key: 'own', label: '您自己的語料與手動建立', match: s => s !== SWIPE_SOURCE, cardClass: '' },
+  { key: 'swipe', label: '來自文案手法庫帶入（參考手法，非您自己的顧客語料）', match: s => s === SWIPE_SOURCE, cardClass: 'from-swipe' },
+];
+
+function buildPainCard(p, solution, extraClass) {
+  const node = $('#pain-card-tpl').content.cloneNode(true);
+  const card = node.querySelector('.pain-card');
+  if (extraClass) card.classList.add(extraClass);
+
+  node.querySelector('.pc-surface').textContent = p.surface_problem;
+  node.querySelector('.pc-desire').textContent = p.deep_desire;
+
+  const stamp = node.querySelector('.pc-stamp');
+  const status_ = p.review_status || 'unreviewed';
+  stamp.className = 'stamp pc-stamp ' + status_;
+  stamp.textContent = STAMP_LABEL[status_] || status_;
+
+  const evidence = Array.isArray(p.evidence_source) ? p.evidence_source : [];
+  const quoteEl = node.querySelector('.pc-quote');
+  if (evidence.length && evidence[0].quote) {
+    quoteEl.className = 'pain-quote pc-quote';
+    quoteEl.textContent = `「${evidence[0].quote}」`;
+  }
+
+  // 完整陳述（detail）：之前萃取/建議時就已經寫入資料庫，但畫面上一直沒有顯示出來，
+  // 只看得到一句話的表層問題／深層渴望，訊息量不夠。這裡補上，讓使用者不用再腦補情境。
+  if (p.detail) {
+    const detailEl = document.createElement('p');
+    detailEl.className = 'pain-detail';
+    detailEl.textContent = p.detail;
+    node.querySelector('.pc-quote').after(detailEl);
+  }
+
+  node.querySelector('.pc-source').textContent = SOURCE_LABEL[p.source] || p.source || '—';
+  node.querySelector('.pc-evidence').innerHTML = `佐證 <span class="num">${evidence.length}</span> 則語料`;
+  node.querySelector('.pc-confidence').innerHTML = p.confidence_score != null
+    ? `置信度 <span class="num">${Math.round(p.confidence_score * 100)}%</span>`
+    : '置信度 <span class="num">—</span>';
+
+  const solutionEl = node.querySelector('.pc-solution');
+  solutionEl.innerHTML = solution
+    ? `<div class="framework-box" style="margin-top:10px"><b>${esc(solution.product_name)}</b>${solution.core_selling_point ? ' — ' + esc(solution.core_selling_point) : ''}</div>`
+    : '<p class="muted" style="margin-top:10px">尚未在「產品／服務設定」中填寫解決方案，請先到上方編輯設定。</p>';
+
+  // 依目前狀態顯示對應的動作按鈕，避免出現「確認已確認的痛點」這種多餘操作。
+  const confirmBtn = node.querySelector('.pc-confirm');
+  const rejectBtn = node.querySelector('.pc-reject');
+  const restoreBtn = node.querySelector('.pc-restore');
+  confirmBtn.hidden = status_ === 'confirmed' || status_ === 'edited';
+  rejectBtn.hidden = status_ === 'rejected';
+  restoreBtn.hidden = status_ === 'unreviewed';
+  confirmBtn.onclick = () => reviewPainPoint(p.id, 'confirmed');
+  rejectBtn.onclick = () => reviewPainPoint(p.id, 'rejected');
+  restoreBtn.onclick = () => reviewPainPoint(p.id, 'unreviewed');
+
+  node.querySelector('.pc-delete').onclick = async () => {
+    if (!confirm(`確定要刪除「${p.surface_problem}」這筆痛點嗎？此操作無法復原。`)) return;
+    try {
+      await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
+        method: 'DELETE',
+        body: JSON.stringify({ pain_point_id: p.id }),
+      });
+      setStatus('已刪除痛點。');
+      await loadPainPoints();
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+  };
+
+  const editBtn = node.querySelector('.pc-edit');
+  const editForm = node.querySelector('.pc-edit-form');
+  editBtn.onclick = () => {
+    if (!editForm.hidden) { editForm.hidden = true; return; }
+    editForm.querySelector('.edit-surface_problem').value = p.surface_problem;
+    editForm.querySelector('.edit-deep_desire').value = p.deep_desire;
+    editForm.querySelector('.edit-detail').value = p.detail || '';
+    editForm.hidden = false;
+  };
+  editForm.querySelector('.pc-edit-cancel').onclick = () => { editForm.hidden = true; };
+  editForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+      await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          pain_point_id: p.id,
+          review_status: 'edited',
+          surface_problem: editForm.querySelector('.edit-surface_problem').value.trim(),
+          deep_desire: editForm.querySelector('.edit-deep_desire').value.trim(),
+          detail: editForm.querySelector('.edit-detail').value.trim(),
+        }),
+      });
+      setStatus('已更新痛點內容。');
+      await loadPainPoints();
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+  });
+
+  return node;
+}
+
 function renderPainList() {
   const list = $('#pain-list');
   if (!painPointsCache.length) { list.innerHTML = '<p class="muted">尚無痛點，請先匯入語料分析，或手動新增。</p>'; return; }
   list.innerHTML = '';
   const solution = currentProfileSolution();
 
-  painPointsCache.forEach(p => {
-    const node = $('#pain-card-tpl').content.cloneNode(true);
-    node.querySelector('.pc-surface').textContent = p.surface_problem;
-    node.querySelector('.pc-desire').textContent = p.deep_desire;
-
-    const stamp = node.querySelector('.pc-stamp');
-    const status_ = p.review_status || 'unreviewed';
-    stamp.className = 'stamp pc-stamp ' + status_;
-    stamp.textContent = STAMP_LABEL[status_] || status_;
-
-    const evidence = Array.isArray(p.evidence_source) ? p.evidence_source : [];
-    const quoteEl = node.querySelector('.pc-quote');
-    if (evidence.length && evidence[0].quote) {
-      quoteEl.className = 'pain-quote pc-quote';
-      quoteEl.textContent = `「${evidence[0].quote}」`;
-    }
-
-    node.querySelector('.pc-source').textContent = SOURCE_LABEL[p.source] || p.source || '—';
-    node.querySelector('.pc-evidence').innerHTML = `佐證 <span class="num">${evidence.length}</span> 則語料`;
-    node.querySelector('.pc-confidence').innerHTML = p.confidence_score != null
-      ? `置信度 <span class="num">${Math.round(p.confidence_score * 100)}%</span>`
-      : '置信度 <span class="num">—</span>';
-
-    const solutionEl = node.querySelector('.pc-solution');
-    solutionEl.innerHTML = solution
-      ? `<div class="framework-box" style="margin-top:10px"><b>${esc(solution.product_name)}</b>${solution.core_selling_point ? ' — ' + esc(solution.core_selling_point) : ''}</div>`
-      : '<p class="muted" style="margin-top:10px">尚未在「產品／服務設定」中填寫解決方案，請先到上方編輯設定。</p>';
-
-    // 依目前狀態顯示對應的動作按鈕，避免出現「確認已確認的痛點」這種多餘操作。
-    const confirmBtn = node.querySelector('.pc-confirm');
-    const rejectBtn = node.querySelector('.pc-reject');
-    const restoreBtn = node.querySelector('.pc-restore');
-    confirmBtn.hidden = status_ === 'confirmed' || status_ === 'edited';
-    rejectBtn.hidden = status_ === 'rejected';
-    restoreBtn.hidden = status_ === 'unreviewed';
-    confirmBtn.onclick = () => reviewPainPoint(p.id, 'confirmed');
-    rejectBtn.onclick = () => reviewPainPoint(p.id, 'rejected');
-    restoreBtn.onclick = () => reviewPainPoint(p.id, 'unreviewed');
-
-    node.querySelector('.pc-delete').onclick = async () => {
-      if (!confirm(`確定要刪除「${p.surface_problem}」這筆痛點嗎？此操作無法復原。`)) return;
-      try {
-        await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
-          method: 'DELETE',
-          body: JSON.stringify({ pain_point_id: p.id }),
-        });
-        setStatus('已刪除痛點。');
-        await loadPainPoints();
-      } catch (err) { setStatus('⚠ ' + err.message, true); }
-    };
-
-    const editBtn = node.querySelector('.pc-edit');
-    const editForm = node.querySelector('.pc-edit-form');
-    editBtn.onclick = () => {
-      if (!editForm.hidden) { editForm.hidden = true; return; }
-      editForm.querySelector('.edit-surface_problem').value = p.surface_problem;
-      editForm.querySelector('.edit-deep_desire').value = p.deep_desire;
-      editForm.querySelector('.edit-detail').value = p.detail || '';
-      editForm.hidden = false;
-    };
-    editForm.querySelector('.pc-edit-cancel').onclick = () => { editForm.hidden = true; };
-    editForm.addEventListener('submit', async e => {
-      e.preventDefault();
-      try {
-        await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
-          method: 'PATCH',
-          body: JSON.stringify({
-            pain_point_id: p.id,
-            review_status: 'edited',
-            surface_problem: editForm.querySelector('.edit-surface_problem').value.trim(),
-            deep_desire: editForm.querySelector('.edit-deep_desire').value.trim(),
-            detail: editForm.querySelector('.edit-detail').value.trim(),
-          }),
-        });
-        setStatus('已更新痛點內容。');
-        await loadPainPoints();
-      } catch (err) { setStatus('⚠ ' + err.message, true); }
-    });
-
-    list.append(node);
+  PAIN_GROUPS.forEach(group => {
+    const points = painPointsCache.filter(p => group.match(p.source));
+    if (!points.length) return;
+    const heading = document.createElement('div');
+    heading.className = 'pain-group-heading' + (group.key === 'swipe' ? ' swipe' : '');
+    heading.innerHTML = `<span>${esc(group.label)}</span><span class="num">${points.length}</span>`;
+    list.append(heading);
+    points.forEach(p => list.append(buildPainCard(p, solution, group.cardClass)));
   });
 }
 
@@ -439,6 +474,10 @@ async function reviewPainPoint(id, review_status) {
 
 $('#suggest-btn').onclick = async () => {
   if (!currentProfileId) return;
+  const btn = $('#suggest-btn');
+  // 防止使用者手滑連點：AI 呼叫的免費額度本來就有限（每分鐘可呼叫次數），
+  // 重複送出同一個請求只會更快把額度用完，對使用者沒有任何好處。
+  btn.disabled = true;
   setStatus('正在請 AI 提出痛點草稿（尚未寫入資料庫，需個別加入）…');
   try {
     const suggestions = await api(`/api/domain-profiles/${currentProfileId}/pain-points/suggest`);
@@ -468,6 +507,7 @@ $('#suggest-btn').onclick = async () => {
     });
     setStatus(`AI 提出了 ${suggestions.length} 組草稿，請逐一確認是否加入清單。`);
   } catch (err) { setStatus('⚠ ' + err.message, true); }
+  finally { btn.disabled = false; }
 };
 
 // 從產業文案手法庫中，找出與目前領域相同或相近、且已萃取出痛點的範例文案，
@@ -590,6 +630,7 @@ function renderSegments(result) {
         <span class="stamp confirmed">對應 <span class="num">${matchedIds.length}</span> 個痛點</span>
       </div>
       ${seg.rationale ? `<div class="pain-quote">${esc(seg.rationale)}</div>` : ''}
+      ${seg.differentiation ? `<div class="segment-differentiation"><b>與目標受眾的差異：</b>${esc(seg.differentiation)}</div>` : ''}
       <div class="pain-meta" style="margin-top:12px">這個族群特別在意的痛點：</div>
       <div class="label-chips" style="margin-top:8px">${chips || '<span class="muted">（無對應痛點）</span>'}</div>
     `;
@@ -647,6 +688,12 @@ function renderReportBreakdown(container, points, sortKey) {
     const node = $('#report-row-tpl').content.cloneNode(true);
     node.querySelector('.rr-surface').textContent = p.surface_problem;
     node.querySelector('.rr-desire').textContent = p.deep_desire;
+    if (p.detail) {
+      const detailEl = document.createElement('p');
+      detailEl.className = 'pain-detail';
+      node.querySelector('.rr-desire').after(detailEl);
+      detailEl.textContent = p.detail;
+    }
 
     const stamp = node.querySelector('.rr-stamp');
     const st = p.review_status || 'unreviewed';
@@ -774,6 +821,9 @@ const swipeForm = $('#swipe-form'), swipeStatus = $('#swipe-status'), swipeList 
 
 swipeForm.addEventListener('submit', async e => {
   e.preventDefault();
+  const submitBtn = swipeForm.querySelector('button[type="submit"]');
+  // 這支會即時呼叫 AI 拆解文案結構，同樣要擋掉手滑連點造成的重複呼叫。
+  if (submitBtn) submitBtn.disabled = true;
   swipeStatus.textContent = '正在拆解結構與標籤…';
   try {
     const item = await api('/api/swipe-copies', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(swipeForm))) });
@@ -781,6 +831,7 @@ swipeForm.addEventListener('submit', async e => {
     swipeForm.reset();
     loadSwipes();
   } catch (err) { swipeStatus.textContent = '⚠ ' + err.message; }
+  finally { if (submitBtn) submitBtn.disabled = false; }
 });
 
 async function loadSwipes() {
