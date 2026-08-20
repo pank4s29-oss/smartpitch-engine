@@ -136,9 +136,20 @@
 <div class="pc-solution"></div>
 <div class="pain-actions">
 <button class="small secondary pc-confirm">確認</button>
+<button class="small ghost pc-edit">編輯</button>
 <button class="small ghost pc-add-solution">＋ 解決方案</button>
 <button class="small danger pc-reject">駁回</button>
+<button class="small ghost pc-restore" hidden>還原為未複核</button>
 </div>
+<form class="pc-edit-form" hidden>
+<label>表層問題<input class="edit-surface_problem" required></label>
+<label>深層渴望<input class="edit-deep_desire" required></label>
+<label>詳細陳述（選填）<textarea class="edit-detail"></textarea></label>
+<div class="pain-actions">
+<button type="submit" class="small">儲存修改</button>
+<button type="button" class="small ghost pc-edit-cancel">取消</button>
+</div>
+</form>
 <form class="pc-solution-form" hidden>
 <label>產品／服務名稱<input class="sol-product_name" required></label>
 <label>核心賣點<input class="sol-core_selling_point" required></label>
@@ -150,13 +161,47 @@
 </template>
 
 <template id="report-tpl">
-<div class="panel">
-<div class="step-heading"><b>&#9679;</b><div><h2>洞察報告</h2><p class="r-meta"></p></div></div>
+<div class="panel report-panel">
+<div class="step-heading">
+<b>&#9679;</b>
+<div><h2>洞察報告</h2><p class="r-meta"></p></div>
+<div class="step-actions"><button type="button" class="ghost small r-print">列印／匯出 PDF</button></div>
+</div>
 <div class="narrative r-narrative"></div>
 <div class="stat-grid r-stats"></div>
 <div class="r-risks"></div>
 <div class="framework-box r-framework"></div>
+
+<hr class="divider">
+<div class="report-detail-head">
+<h3>受眾痛點逐項分析</h3>
+<label class="sort-label">排序
+<select class="r-sort">
+<option value="confidence_desc">置信度：高到低</option>
+<option value="confidence_asc">置信度：低到高</option>
+<option value="status">複核狀態</option>
+<option value="evidence_desc">佐證則數：多到少</option>
+</select>
+</label>
 </div>
+<div class="r-breakdown"></div>
+</div>
+</template>
+
+<template id="report-row-tpl">
+<article class="report-row">
+<div class="report-row-top">
+<div><h4 class="rr-surface"></h4><p class="deep-desire rr-desire"></p></div>
+<span class="stamp rr-stamp"></span>
+</div>
+<div class="confidence-bar"><div class="confidence-bar-fill rr-bar"></div></div>
+<div class="pain-meta">
+<span class="rr-source"></span>
+<span class="rr-evidence"></span>
+<span class="rr-confidence"></span>
+</div>
+<div class="rr-solution"></div>
+</article>
 </template>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
