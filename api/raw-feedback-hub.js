@@ -1,4 +1,4 @@
-const { getUserFromRequest, restRequest, sendError } = require('../_lib/supabase');
+const { getUserFromRequest, restRequest, sendError } = require('./_lib/supabase');
 
 // 這支合併了原本 2 支獨立檔案：
 //   GET/POST  /api/raw-feedback      (無 id)
