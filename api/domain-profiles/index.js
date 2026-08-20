@@ -9,9 +9,15 @@ module.exports = async (req, res) => {
   const { id } = req.query || {};
 
   if (req.method === 'POST') {
-    const { domain_tag, audience, price_tier, constraints } = req.body || {};
+    const {
+      domain_tag, audience, price_tier, constraints,
+      product_name, core_selling_point, solution_description, trust_proof,
+    } = req.body || {};
     if (!domain_tag || !audience || !price_tier) {
       return sendError(res, 400, '請填寫產業／領域、目標受眾與價格帶。');
+    }
+    if (!product_name || !solution_description) {
+      return sendError(res, 400, '請填寫產品／服務名稱與解決方案說明，這是後續萃取痛點與產出報告會用到的核心資訊。');
     }
     try {
       // 重複偵測：同一使用者底下，領域＋受眾（忽略大小寫與前後空白）相同就視為重複，
@@ -36,6 +42,10 @@ module.exports = async (req, res) => {
           audience,
           price_tier,
           business_constraints: constraints || [],
+          product_name,
+          core_selling_point: core_selling_point || null,
+          solution_description,
+          trust_proof: trust_proof || null,
         },
       });
       return res.status(200).json(profile);
@@ -77,11 +87,18 @@ module.exports = async (req, res) => {
 
   if (req.method === 'PATCH') {
     if (!id) return sendError(res, 400, '缺少 id。');
-    const { domain_tag, audience, price_tier } = req.body || {};
+    const {
+      domain_tag, audience, price_tier,
+      product_name, core_selling_point, solution_description, trust_proof,
+    } = req.body || {};
     const patch = {};
     if (domain_tag !== undefined) patch.domain_tag = domain_tag;
     if (audience !== undefined) patch.audience = audience;
     if (price_tier !== undefined) patch.price_tier = price_tier;
+    if (product_name !== undefined) patch.product_name = product_name;
+    if (core_selling_point !== undefined) patch.core_selling_point = core_selling_point;
+    if (solution_description !== undefined) patch.solution_description = solution_description;
+    if (trust_proof !== undefined) patch.trust_proof = trust_proof;
     if (!Object.keys(patch).length) return sendError(res, 400, '沒有要更新的欄位。');
     try {
       const updated = await restRequest(`domain_profiles?id=eq.${id}&user_id=eq.${user.id}`, {
@@ -89,7 +106,7 @@ module.exports = async (req, res) => {
         prefer: 'return=representation',
         body: patch,
       });
-      if (!updated.length) return sendError(res, 404, '找不到對應的領域設定。');
+      if (!updated.length) return sendError(res, 404, '找不到對應的產品/服務設定。');
       return res.status(200).json(updated[0]);
     } catch (err) {
       return sendError(res, 500, err.message);
