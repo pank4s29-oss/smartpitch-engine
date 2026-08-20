@@ -34,6 +34,8 @@
 <div class="step-heading"><b>01</b><div><h2>領域設定</h2><p>選擇既有的受眾研究，或建立新的一組。</p></div></div>
 <div class="profile-select-row">
 <select id="profile-select"><option value="">— 選擇領域設定 —</option></select>
+<button type="button" id="profile-edit-btn" class="ghost small" disabled>編輯</button>
+<button type="button" id="profile-delete-btn" class="danger small" disabled>刪除</button>
 <button type="button" id="new-profile-toggle" class="ghost small">＋ 新建</button>
 </div>
 <form id="profile-form" hidden>
@@ -45,7 +47,8 @@
 <label class="choice"><input type="radio" name="price_tier" value="low" checked> 低單價／快速決策</label>
 <label class="choice"><input type="radio" name="price_tier" value="high"> 高客單／建立信任</label>
 </fieldset>
-<button type="submit">建立領域設定</button>
+<button type="submit" id="profile-form-submit">建立領域設定</button>
+<button type="button" id="profile-form-cancel" class="ghost">取消</button>
 </form>
 </section>
 
@@ -53,15 +56,9 @@
 
 <section class="panel">
 <div class="step-heading"><b>02</b><div><h2>語料匯入</h2><p>貼上真實顧客評論、客服對話或訪談逐字稿——每則之間空一行即可一次貼多則。</p></div></div>
+<div id="label-manager" class="label-manager"></div>
 <form id="feedback-form">
-<label>語料來源<select name="source_type">
-<option value="review">顧客評論</option>
-<option value="support_chat">客服對話</option>
-<option value="survey">問卷回饋</option>
-<option value="interview_transcript">訪談逐字稿</option>
-<option value="social_comment">社群留言</option>
-<option value="other">其他</option>
-</select></label>
+<label>語料來源<select name="source_type" id="source-type-select"></select></label>
 <label>語料內容<textarea name="raw_texts" required placeholder="貼上一則或多則真實顧客語料，多則請以空行分隔"></textarea></label>
 <button type="submit">匯入語料</button>
 </form>
@@ -78,6 +75,7 @@
 <label>表層問題<input name="surface_problem" placeholder="例：下班太累，運動難以持續" required></label>
 <label>深層渴望<input name="deep_desire" placeholder="例：不犧牲生活也能維持健康" required></label>
 </div>
+<label>詳細陳述（選填）<textarea name="detail" placeholder="具體說明這個痛點通常在什麼情境下發生、造成什麼實際影響"></textarea></label>
 <button type="submit" class="secondary">手動新增一筆</button>
 </form>
 <hr class="divider">
