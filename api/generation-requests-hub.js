@@ -31,31 +31,41 @@ async function handleGet(req, res, user, id) {
 async function handleCreate(req, res, user) {
   const body = req.body || {};
   const {
-    profile_id, target_platform, product_name, product_description,
+    profile_id, target_platform,
     length_type, custom_word_count, tone, primary_emotion, secondary_emotions,
     block_order, constraints,
   } = body;
 
-  if (!profile_id || !product_name || !product_description) {
-    return sendError(res, 400, '缺少必要欄位（profile_id / product_name / product_description）。');
+  if (!profile_id) {
+    return sendError(res, 400, '缺少必要欄位（profile_id）。');
   }
 
   try {
     const [profile] = await restRequest(`domain_profiles?id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
-    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+    if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
+
+    // 產品名稱／說明預設帶入「產品／服務設定」的內容，仍可在生成請求中個別覆寫（例如同一產品針對不同通路要換句話說）。
+    const product_name = body.product_name || profile.product_name;
+    const product_description = body.product_description || profile.solution_description;
+    if (!product_name || !product_description) {
+      return sendError(res, 400, '請先在「產品／服務設定」中填寫產品名稱與解決方案說明，或在此次生成請求中個別提供。');
+    }
 
     const painPoints = await restRequest(`audience_pain_points?domain_profile_id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
-    const solutions = await restRequest(`product_solutions?domain_profile_id=eq.${profile_id}&user_id=eq.${user.id}&select=*`);
-    if (!painPoints.length || !solutions.length) {
-      return sendError(res, 400, '請至少完成一組痛點與解決方案配對，再送出生成請求。');
+    if (!painPoints.length) {
+      return sendError(res, 400, '請至少建立一組痛點，再送出生成請求。');
     }
-    const pairs = painPoints.map(p => {
-      const solution = solutions.find(s => s.pain_point_id === p.id);
-      return solution ? { ...p, ...solution } : null;
-    }).filter(Boolean);
-    if (!pairs.length) {
-      return sendError(res, 400, '找不到完整配對的痛點與解決方案，請確認每組痛點都已填寫對應的解決方案。');
+    if (!profile.product_name || !profile.solution_description) {
+      return sendError(res, 400, '請先在「產品／服務設定」中填寫產品／服務名稱與解決方案說明，再送出生成請求。');
     }
+    // 解決方案改為在「產品／服務設定」填寫一次，套用到底下所有痛點，不用每個痛點各自配對。
+    const pairs = painPoints.map(p => ({
+      ...p,
+      product_name: profile.product_name,
+      core_selling_point: profile.core_selling_point,
+      solution_description: profile.solution_description,
+      trust_proof: profile.trust_proof,
+    }));
 
     const swipeExamples = await restRequest(
       `swipe_copies?user_id=eq.${user.id}&industry_tag=eq.${encodeURIComponent(profile.domain_tag)}&select=raw_content,block_breakdown,framework_tag&limit=3`
