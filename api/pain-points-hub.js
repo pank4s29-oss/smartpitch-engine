@@ -32,7 +32,7 @@ async function handleCreate(req, res, user, profileId) {
   }
   try {
     const owned = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=id`);
-    if (!owned.length) return sendError(res, 404, '找不到對應的領域設定。');
+    if (!owned.length) return sendError(res, 404, '找不到對應的產品/服務設定。');
 
     const [point] = await restRequest('audience_pain_points', {
       method: 'POST',
@@ -78,10 +78,33 @@ async function handleReview(req, res, user, profileId) {
   }
 }
 
+// 刪除一筆痛點。pain_point_id 放在 request body（與 PATCH 複核的慣例一致）。
+// 若舊資料底下還掛著 product_solutions（舊版每個痛點各自的解決方案），先一併清掉，
+// 避免外鍵約束擋下刪除。
+async function handleDelete(req, res, user, profileId) {
+  const { pain_point_id } = req.body || {};
+  if (!pain_point_id) return sendError(res, 400, '缺少 pain_point_id。');
+  try {
+    await restRequest(
+      `product_solutions?pain_point_id=eq.${pain_point_id}&user_id=eq.${user.id}`,
+      { method: 'DELETE' }
+    ).catch(() => {}); // 舊資料表可能沒有對應資料，刪除失敗不影響主流程
+
+    await restRequest(
+      `audience_pain_points?id=eq.${pain_point_id}&domain_profile_id=eq.${profileId}&user_id=eq.${user.id}`,
+      { method: 'DELETE' }
+    );
+    return res.status(200).json({ deleted: true });
+  } catch (err) {
+    return sendError(res, 500, `刪除失敗：${err.message}`);
+  }
+}
+
 async function dispatchDefault(req, res, user, profileId) {
   if (req.method === 'GET') return handleList(req, res, user, profileId);
   if (req.method === 'POST') return handleCreate(req, res, user, profileId);
   if (req.method === 'PATCH') return handleReview(req, res, user, profileId);
+  if (req.method === 'DELETE') return handleDelete(req, res, user, profileId);
   return sendError(res, 405, '不支援的方法。');
 }
 
@@ -89,7 +112,7 @@ async function handleSuggest(req, res, user, profileId) {
   if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
   try {
     const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=*`);
-    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+    if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
 
     const system = '你是市場洞察分析師。只能輸出合法的 JSON 陣列，不要有任何前後說明文字或 Markdown 圍籬。';
     const prompt = `領域：${profile.domain_tag}
@@ -123,13 +146,13 @@ async function handleExtract(req, res, user, profileId) {
 
   try {
     const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=*`);
-    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+    if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
 
     const idFilter = feedback_ids.map(id => `"${id}"`).join(',');
     const feedbacks = await restRequest(
       `raw_customer_feedback?id=in.(${idFilter})&user_id=eq.${user.id}&domain_profile_id=eq.${profileId}&select=id,raw_text`
     );
-    if (!feedbacks.length) return sendError(res, 404, '找不到對應的語料，請確認是否已歸類到此領域設定。');
+    if (!feedbacks.length) return sendError(res, 404, '找不到對應的語料，請確認是否已歸類到此產品/服務設定。');
 
     const system = `你是市場洞察分析師，專長是從真實顧客語料中萃取痛點，而不是憑常識推測。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
 規則：
@@ -219,7 +242,7 @@ async function handleSegments(req, res, user, profileId) {
   if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
   try {
     const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=*`);
-    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+    if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
 
     const points = await restRequest(
       `audience_pain_points?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&review_status=neq.rejected&select=id,surface_problem,deep_desire`
@@ -273,7 +296,7 @@ async function handleFromSwipe(req, res, user, profileId) {
   if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
   try {
     const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=domain_tag`);
-    if (!profile) return sendError(res, 404, '找不到對應的領域設定。');
+    if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
 
     const swipes = await restRequest(
       `swipe_copies?user_id=eq.${user.id}&select=id,industry_tag,extracted_pain_points&extracted_pain_points=not.is.null`
