@@ -1,5 +1,5 @@
-const { getUserFromRequest, restRequest, sendError } = require('../_lib/supabase');
-const { call, parseJSON } = require('../_lib/provider');
+const { getUserFromRequest, restRequest, sendError } = require('./_lib/supabase');
+const { call, parseJSON } = require('./_lib/provider');
 
 // 這支合併了原本 3 支獨立檔案：
 //   POST /api/domain-profiles/:id/pain-points          (action 未帶)
