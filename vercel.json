@@ -2,6 +2,8 @@
   "rewrites": [
     { "source": "/api/domain-profiles/:id/pain-points/suggest", "destination": "/api/pain-points-hub?id=:id&action=suggest" },
     { "source": "/api/domain-profiles/:id/pain-points/extract", "destination": "/api/pain-points-hub?id=:id&action=extract" },
+    { "source": "/api/domain-profiles/:id/pain-points/segments", "destination": "/api/pain-points-hub?id=:id&action=segments" },
+    { "source": "/api/domain-profiles/:id/pain-points/from-swipe", "destination": "/api/pain-points-hub?id=:id&action=from-swipe" },
     { "source": "/api/domain-profiles/:id/pain-points", "destination": "/api/pain-points-hub?id=:id" },
     { "source": "/api/insight-reports", "destination": "/api/insight-reports-hub" },
     { "source": "/api/insight-reports/:id", "destination": "/api/insight-reports-hub?id=:id" },
