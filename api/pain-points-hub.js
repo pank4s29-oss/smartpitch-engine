@@ -122,11 +122,11 @@ async function handleSuggest(req, res, user, profileId) {
 請提出 3 組該受眾常見的痛點草稿，每組包含：
 - surface_problem：表層問題（一句話）
 - deep_desire：背後的深層渴望（一句話）
-- detail：完整陳述（2-4 句），具體說明這個痛點通常在什麼情境下發生、對受眾造成什麼實際影響，讓使用者不用再腦補就能理解全貌
+- detail：完整陳述（4-6 句，150-250 字），內容至少涵蓋：①這個痛點通常在什麼具體情境或時間點浮現、②背後的成因或誘發因素、③對受眾造成的實際影響（時間、金錢、情緒、人際關係等面向擇要說明）、④這個受眾過去可能嘗試過但沒有真正解決的做法。寫得像是可以直接放進受眾研究報告的一段敘述，讓使用者不用再腦補就能理解全貌。
 
 輸出格式：[{"surface_problem":"...","deep_desire":"...","detail":"..."}, ...]`;
 
-    const raw = await call({ system, prompt, maxTokens: 800, budgetMs: SUGGEST_AI_BUDGET_MS });
+    const raw = await call({ system, prompt, maxTokens: 1400, budgetMs: SUGGEST_AI_BUDGET_MS });
     const suggestions = parseJSON(raw);
     return res.status(200).json(suggestions);
   } catch (err) {
@@ -158,7 +158,7 @@ async function handleExtract(req, res, user, profileId) {
 規則：
 1. 每個痛點都必須有語料佐證，evidence_indices 要列出所有支持這個痛點的語料編號（從 0 開始）。
 2. quote 從對應語料原文擷取最能代表這個痛點的一小段（不超過 40 字），不可整段照抄。
-3. detail 是給使用者看的完整陳述（2-4 句），要具體寫出：這個痛點通常在什麼情境下出現、造成什麼實際困擾或後果、語料中有沒有透露出使用者曾嘗試過什麼因應方式。內容必須根據語料本身，不可額外腦補語料沒提到的細節。
+3. detail 是給使用者看的完整陳述（4-6 句，150-250 字），至少涵蓋：①這個痛點通常在語料描述的什麼情境或時間點出現、②語料中透露出的成因、③造成的實際困擾或後果（具體一點，不要只寫「很困擾」）、④語料中有沒有透露出使用者曾嘗試過什麼因應方式、效果如何。內容必須根據語料本身，不可額外腦補語料沒提到的細節；若語料資訊不足以支撐某一項，可以省略該項，但整體仍需具體、不可流於空泛套語。
 4. 不要輸出語料裡完全沒有依據、純粹用常識腦補的痛點。
 5. 同一個痛點如果在多筆語料中都有出現，要合併成一條、evidence_indices 列出全部相關編號，不要重複拆成多條。`;
 
@@ -171,14 +171,14 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
 請萃取這些語料中反映出的受眾痛點，每個痛點包含：
 - surface_problem：表層問題（一句話）
 - deep_desire：背後的深層渴望（一句話）
-- detail：完整陳述（2-4 句），具體說明發生情境與實際影響，根據語料內容撰寫
+- detail：完整陳述（4-6 句，150-250 字），具體說明發生情境、成因、實際影響與過去嘗試過的因應方式，根據語料內容撰寫
 - evidence_indices：支持此痛點的語料編號陣列，例如 [0,2]
 - quote：從語料中擷取的代表性原文片段（不超過 40 字）
 
 輸出格式：
 {"pain_points":[{"surface_problem":"...","deep_desire":"...","detail":"...","evidence_indices":[0,2],"quote":"..."}]}`;
 
-    const raw = await call({ system, prompt, maxTokens: 4000, budgetMs: EXTRACT_AI_BUDGET_MS });
+    const raw = await call({ system, prompt, maxTokens: 5000, budgetMs: EXTRACT_AI_BUDGET_MS });
     const parsed = parseJSON(raw);
     if (!parsed || !Array.isArray(parsed.pain_points)) {
       throw new Error('模型回應格式不符預期（缺少 pain_points 陣列），請稍後再試一次。');
@@ -255,33 +255,51 @@ async function handleSegments(req, res, user, profileId) {
 任務：從一份受眾痛點清單，反推出可能存在的「潛在／隱藏受眾」——也就是表面上都屬於同一個目標受眾，
 但實際上動機、情境或急迫程度不同的細分族群。每個痛點可以同時屬於多個族群。
 規則：
-1. 抓出 2-5 個有區別度的族群，不要只是把原本的目標受眾換句話說。
+1. 抓出 2-5 個有區別度的族群。每個族群都必須比「目前設定的目標受眾」更細分、更具體，絕對不能只是把
+   目標受眾的描述換句話說、加一兩個形容詞，或原封不動地重述。如果反推出來的族群跟目標受眾幾乎無法
+   區分，就不要輸出這個族群。
 2. 每個族群要有清楚的區隔依據（情境、動機、急迫程度、決策角色等），不能只靠年齡或性別區分。
 3. matched_indices 只能填入下方清單中實際存在的編號，不可捏造。
-4. 若清單裡的痛點明顯無法反映出多元受眾（例如全部指向同一種情境），可以回傳少於 2 個族群，並在對應的 note 欄位說明原因。`;
+4. differentiation 欄位要明確寫出「這個族群跟目前設定的目標受眾『${profile.audience}』具體有什麼不同」，
+   不能只寫「更精準」這種空泛描述，要講清楚差在哪個面向。
+5. 若清單裡的痛點明顯無法反映出多元受眾（例如全部指向同一種情境），可以回傳少於 2 個族群，並在對應的 note 欄位說明原因。`;
 
     const prompt = `【領域】${profile.domain_tag}
-【目前設定的目標受眾】${profile.audience}
+【目前設定的目標受眾（反推出的族群不可與此重複或僅為換句話說）】${profile.audience}
 
 【痛點清單】（編號從 0 開始）
 ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴望：${p.deep_desire}`).join('\n')}
 
 請輸出：
-{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境（1-2句）","rationale":"為什麼這些痛點特別打中他們（1句）","matched_indices":[0,2]}],"note":"若整體區隔度不高，說明原因（選填）"}`;
+{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境與典型情境（2-4句，具體描述，不要空泛）","rationale":"為什麼這些痛點特別打中他們（2-3句）","differentiation":"跟目前目標受眾『${profile.audience}』具體差在哪裡（1-2句）","matched_indices":[0,2]}],"note":"若整體區隔度不高，說明原因（選填）"}`;
 
-    const raw = await call({ system, prompt, maxTokens: 1200, budgetMs: SEGMENTS_AI_BUDGET_MS });
+    const raw = await call({ system, prompt, maxTokens: 1800, budgetMs: SEGMENTS_AI_BUDGET_MS });
     const parsed = parseJSON(raw);
     const rawSegments = parsed && Array.isArray(parsed.segments) ? parsed.segments : [];
 
-    const segments = rawSegments.map(s => {
-      const indices = Array.isArray(s.matched_indices) ? s.matched_indices.filter(i => points[i]) : [];
-      return {
-        segment_name: s.segment_name || '未命名族群',
-        description: s.description || '',
-        rationale: s.rationale || '',
-        matched_pain_point_ids: indices.map(i => points[i].id),
-      };
-    }).filter(s => s.matched_pain_point_ids.length);
+    // 安全網：即使 Prompt 已明確要求不可與目標受眾重疊，仍用簡單的正規化字串比對擋掉
+    // 明顯只是把 audience 原文換句話說（去除空白／標點後幾乎完全相同或互相包含）的族群，
+    // 避免「潛在受眾」清單裡出現一個其實就是原本受眾的重複項。
+    const normalize = s => (s || '').replace(/[\s、，。！？~～\-()（）「」『』]/g, '').toLowerCase();
+    const audienceNorm = normalize(profile.audience);
+    const isDuplicateOfAudience = text => {
+      const t = normalize(text);
+      if (!t || !audienceNorm) return false;
+      return t === audienceNorm || t.includes(audienceNorm) || audienceNorm.includes(t);
+    };
+
+    const segments = rawSegments
+      .filter(s => !isDuplicateOfAudience(s.segment_name) && !isDuplicateOfAudience(s.description))
+      .map(s => {
+        const indices = Array.isArray(s.matched_indices) ? s.matched_indices.filter(i => points[i]) : [];
+        return {
+          segment_name: s.segment_name || '未命名族群',
+          description: s.description || '',
+          rationale: s.rationale || '',
+          differentiation: s.differentiation || '',
+          matched_pain_point_ids: indices.map(i => points[i].id),
+        };
+      }).filter(s => s.matched_pain_point_ids.length);
 
     return res.status(200).json({ segments, note: parsed && parsed.note, based_on_count: points.length });
   } catch (err) {
