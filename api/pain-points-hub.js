@@ -23,7 +23,7 @@ async function handleList(req, res, user, profileId) {
 }
 
 async function handleCreate(req, res, user, profileId) {
-  const { surface_problem, deep_desire, source } = req.body || {};
+  const { surface_problem, deep_desire, detail, source } = req.body || {};
   if (!surface_problem || !deep_desire) {
     return sendError(res, 400, '請填寫表層問題與深層渴望。');
   }
@@ -39,6 +39,7 @@ async function handleCreate(req, res, user, profileId) {
         domain_profile_id: profileId,
         surface_problem,
         deep_desire,
+        detail: detail || null,
         source: source || 'user_input',
       },
     });
@@ -51,7 +52,7 @@ async function handleCreate(req, res, user, profileId) {
 // 人工複核：確認／修改／駁回一筆痛點。這是「痛點驗證層」的核心操作，
 // 使用者標註的結果（review_status）會直接影響 insight-reports 報告裡的覆蓋率統計。
 async function handleReview(req, res, user, profileId) {
-  const { pain_point_id, review_status, surface_problem, deep_desire } = req.body || {};
+  const { pain_point_id, review_status, surface_problem, deep_desire, detail } = req.body || {};
   if (!pain_point_id) return sendError(res, 400, '缺少 pain_point_id。');
   if (!['confirmed', 'edited', 'rejected', 'unreviewed'].includes(review_status)) {
     return sendError(res, 400, 'review_status 必須是 confirmed／edited／rejected／unreviewed 其中之一。');
@@ -60,6 +61,7 @@ async function handleReview(req, res, user, profileId) {
   if (review_status === 'edited') {
     if (surface_problem) patch.surface_problem = surface_problem;
     if (deep_desire) patch.deep_desire = deep_desire;
+    if (detail !== undefined) patch.detail = detail;
   }
   try {
     const updated = await restRequest(
@@ -91,8 +93,12 @@ async function handleSuggest(req, res, user, profileId) {
 目標受眾：${profile.audience}
 價格帶：${profile.price_tier === 'low' ? '低單價／快速決策' : '高客單價／建立信任'}
 
-請提出 3 組該受眾常見的痛點草稿，每組包含 surface_problem（表層問題，一句話）與 deep_desire（背後的深層渴望，一句話）。
-輸出格式：[{"surface_problem":"...","deep_desire":"..."}, ...]`;
+請提出 3 組該受眾常見的痛點草稿，每組包含：
+- surface_problem：表層問題（一句話）
+- deep_desire：背後的深層渴望（一句話）
+- detail：完整陳述（2-4 句），具體說明這個痛點通常在什麼情境下發生、對受眾造成什麼實際影響，讓使用者不用再腦補就能理解全貌
+
+輸出格式：[{"surface_problem":"...","deep_desire":"...","detail":"..."}, ...]`;
 
     const raw = await call({ system, prompt, maxTokens: 800, budgetMs: SUGGEST_AI_BUDGET_MS });
     const suggestions = parseJSON(raw);
@@ -126,8 +132,9 @@ async function handleExtract(req, res, user, profileId) {
 規則：
 1. 每個痛點都必須有語料佐證，evidence_indices 要列出所有支持這個痛點的語料編號（從 0 開始）。
 2. quote 從對應語料原文擷取最能代表這個痛點的一小段（不超過 40 字），不可整段照抄。
-3. 不要輸出語料裡完全沒有依據、純粹用常識腦補的痛點。
-4. 同一個痛點如果在多筆語料中都有出現，要合併成一條、evidence_indices 列出全部相關編號，不要重複拆成多條。`;
+3. detail 是給使用者看的完整陳述（2-4 句），要具體寫出：這個痛點通常在什麼情境下出現、造成什麼實際困擾或後果、語料中有沒有透露出使用者曾嘗試過什麼因應方式。內容必須根據語料本身，不可額外腦補語料沒提到的細節。
+4. 不要輸出語料裡完全沒有依據、純粹用常識腦補的痛點。
+5. 同一個痛點如果在多筆語料中都有出現，要合併成一條、evidence_indices 列出全部相關編號，不要重複拆成多條。`;
 
     const prompt = `【領域】${profile.domain_tag}
 【目標受眾】${profile.audience}
@@ -138,13 +145,14 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
 請萃取這些語料中反映出的受眾痛點，每個痛點包含：
 - surface_problem：表層問題（一句話）
 - deep_desire：背後的深層渴望（一句話）
+- detail：完整陳述（2-4 句），具體說明發生情境與實際影響，根據語料內容撰寫
 - evidence_indices：支持此痛點的語料編號陣列，例如 [0,2]
 - quote：從語料中擷取的代表性原文片段（不超過 40 字）
 
 輸出格式：
-{"pain_points":[{"surface_problem":"...","deep_desire":"...","evidence_indices":[0,2],"quote":"..."}]}`;
+{"pain_points":[{"surface_problem":"...","deep_desire":"...","detail":"...","evidence_indices":[0,2],"quote":"..."}]}`;
 
-    const raw = await call({ system, prompt, maxTokens: 3000, budgetMs: EXTRACT_AI_BUDGET_MS });
+    const raw = await call({ system, prompt, maxTokens: 4000, budgetMs: EXTRACT_AI_BUDGET_MS });
     const parsed = parseJSON(raw);
     if (!parsed || !Array.isArray(parsed.pain_points)) {
       throw new Error('模型回應格式不符預期（缺少 pain_points 陣列），請稍後再試一次。');
@@ -161,6 +169,7 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
         domain_profile_id: profileId,
         surface_problem: p.surface_problem,
         deep_desire: p.deep_desire,
+        detail: p.detail || null,
         source: 'raw_feedback_extraction',
         evidence_source,
         confidence_score: indices.length ? Math.min(1, indices.length / feedbacks.length) : null,
