@@ -34,39 +34,115 @@ function setStatus(msg, isError = false) {
 // ---------------- 領域設定 ----------------
 
 let currentProfileId = null;
+let profilesCache = [];
+let editingProfileId = null; // 非 null 時，#profile-form 處於「編輯既有設定」模式
 
 async function loadProfiles(selectId) {
   const select = $('#profile-select');
   try {
-    const profiles = await api('/api/domain-profiles');
+    profilesCache = await api('/api/domain-profiles');
     select.innerHTML = '<option value="">— 選擇領域設定 —</option>' +
-      profiles.map(p => `<option value="${p.id}">${esc(p.domain_tag)}／${esc(p.audience)}</option>`).join('');
+      profilesCache.map(p => `<option value="${p.id}">${esc(p.domain_tag)}／${esc(p.audience)}</option>`).join('');
     if (selectId) select.value = selectId;
+    updateProfileToolbar();
   } catch (e) { setStatus('⚠ ' + e.message, true); }
+}
+
+function updateProfileToolbar() {
+  const has = !!currentProfileId;
+  $('#profile-edit-btn').disabled = !has;
+  $('#profile-delete-btn').disabled = !has;
+}
+
+function setProfileFormMode(mode, profile) {
+  const form = $('#profile-form');
+  const submitBtn = $('#profile-form-submit');
+  editingProfileId = mode === 'edit' ? profile.id : null;
+  form.classList.toggle('editing', mode === 'edit');
+  if (mode === 'edit') {
+    form.domain_tag.value = profile.domain_tag;
+    form.audience.value = profile.audience;
+    const radio = form.querySelector(`input[name="price_tier"][value="${profile.price_tier}"]`);
+    if (radio) radio.checked = true;
+    submitBtn.textContent = '更新領域設定';
+  } else {
+    form.reset();
+    submitBtn.textContent = '建立領域設定';
+  }
+  form.hidden = false;
 }
 
 $('#new-profile-toggle').onclick = () => {
   const form = $('#profile-form');
-  form.hidden = !form.hidden;
+  if (!form.hidden && editingProfileId === null) { form.hidden = true; return; }
+  setProfileFormMode('create');
+};
+
+$('#profile-form-cancel').onclick = () => {
+  $('#profile-form').hidden = true;
+  editingProfileId = null;
+  $('#profile-form').classList.remove('editing');
+};
+
+$('#profile-edit-btn').onclick = () => {
+  if (!currentProfileId) return;
+  const profile = profilesCache.find(p => p.id === currentProfileId);
+  if (profile) setProfileFormMode('edit', profile);
+};
+
+$('#profile-delete-btn').onclick = async () => {
+  if (!currentProfileId) return;
+  const profile = profilesCache.find(p => p.id === currentProfileId);
+  const label = profile ? `${profile.domain_tag}／${profile.audience}` : '這組領域設定';
+  if (!confirm(`確定要刪除「${label}」嗎？此操作無法復原，若底下仍有痛點或語料可能會被拒絕刪除。`)) return;
+  try {
+    await api(`/api/domain-profiles/${currentProfileId}`, { method: 'DELETE' });
+    setStatus('已刪除領域設定。');
+    currentProfileId = null;
+    await loadProfiles();
+    onProfileSelected(null);
+  } catch (err) { setStatus('⚠ ' + err.message, true); }
 };
 
 $('#profile-form').addEventListener('submit', async e => {
   e.preventDefault();
   const data = Object.fromEntries(new FormData(e.target));
   try {
+    if (editingProfileId) {
+      const updated = await api(`/api/domain-profiles?id=${editingProfileId}`, { method: 'PATCH', body: JSON.stringify(data) });
+      setStatus('已更新領域設定。');
+      e.target.hidden = true;
+      editingProfileId = null;
+      e.target.classList.remove('editing');
+      await loadProfiles(updated.id);
+      onProfileSelected(updated.id);
+      return;
+    }
     const profile = await api('/api/domain-profiles', { method: 'POST', body: JSON.stringify(data) });
     setStatus('已建立領域設定。');
     e.target.reset();
     e.target.hidden = true;
     await loadProfiles(profile.id);
     onProfileSelected(profile.id);
-  } catch (err) { setStatus('⚠ ' + err.message, true); }
+  } catch (err) {
+    if (err.duplicate && err.existing_id) {
+      if (confirm(`${err.message}\n是否改用既有的「${err.existing_label}」？`)) {
+        e.target.reset();
+        e.target.hidden = true;
+        await loadProfiles(err.existing_id);
+        onProfileSelected(err.existing_id);
+        return;
+      }
+    }
+    setStatus('⚠ ' + err.message, true);
+  }
 });
 
 $('#profile-select').addEventListener('change', e => onProfileSelected(e.target.value || null));
 
 function onProfileSelected(id) {
   currentProfileId = id;
+  updateProfileToolbar();
   const scope = $('#profile-scope');
   if (!id) { scope.hidden = true; return; }
   scope.hidden = false;
@@ -75,7 +151,65 @@ function onProfileSelected(id) {
 }
 
 async function refreshProfileScope() {
-  await Promise.all([loadFeedback(), loadPainPoints(), loadReportHistory()]);
+  await Promise.all([loadSourceLabels(), loadFeedback(), loadPainPoints(), loadReportHistory()]);
+}
+
+// ---------------- 語料來源分類管理 ----------------
+
+let sourceLabelsCache = [];
+
+async function loadSourceLabels() {
+  try {
+    sourceLabelsCache = await api('/api/raw-feedback/source-types');
+    renderSourceLabels();
+  } catch (e) { setStatus('⚠ ' + e.message, true); }
+}
+
+function renderSourceLabels() {
+  const manager = $('#label-manager');
+  const select = $('#source-type-select');
+  const prevValue = select.value;
+
+  manager.innerHTML = `
+    <div class="label-chips"></div>
+    <div class="label-add-row">
+      <input type="text" placeholder="新增語料來源分類，例如：Instagram 留言" maxlength="20" class="new-label-input">
+      <button type="button" class="ghost small new-label-add">＋ 新增分類</button>
+    </div>`;
+
+  const chips = manager.querySelector('.label-chips');
+  sourceLabelsCache.forEach(l => {
+    const chip = document.createElement('span');
+    chip.className = 'label-chip';
+    chip.innerHTML = `${esc(l.label)} <button type="button" title="刪除分類" aria-label="刪除分類">×</button>`;
+    chip.querySelector('button').onclick = async () => {
+      if (!confirm(`刪除分類「${l.label}」？（已使用此分類的語料不受影響）`)) return;
+      try {
+        await api(`/api/raw-feedback/source-types/${l.id}`, { method: 'DELETE' });
+        await loadSourceLabels();
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    };
+    chips.append(chip);
+  });
+
+  const input = manager.querySelector('.new-label-input');
+  const addBtn = manager.querySelector('.new-label-add');
+  const submitLabel = async () => {
+    const label = input.value.trim();
+    if (!label) return;
+    addBtn.disabled = true;
+    try {
+      await api('/api/raw-feedback/source-types', { method: 'POST', body: JSON.stringify({ label }) });
+      await loadSourceLabels();
+      $('#source-type-select').value = label;
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { addBtn.disabled = false; }
+  };
+  addBtn.onclick = submitLabel;
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submitLabel(); } });
+
+  select.innerHTML = sourceLabelsCache.map(l => `<option value="${esc(l.label)}">${esc(l.label)}</option>`).join('');
+  if (prevValue && sourceLabelsCache.some(l => l.label === prevValue)) select.value = prevValue;
 }
 
 // ---------------- 語料匯入 ----------------
@@ -217,8 +351,44 @@ function renderPainList() {
       });
     }
 
-    node.querySelector('.pc-confirm').onclick = () => reviewPainPoint(p.id, 'confirmed');
-    node.querySelector('.pc-reject').onclick = () => reviewPainPoint(p.id, 'rejected');
+    // 依目前狀態顯示對應的動作按鈕，避免出現「確認已確認的痛點」這種多餘操作。
+    const confirmBtn = node.querySelector('.pc-confirm');
+    const rejectBtn = node.querySelector('.pc-reject');
+    const restoreBtn = node.querySelector('.pc-restore');
+    confirmBtn.hidden = status_ === 'confirmed' || status_ === 'edited';
+    rejectBtn.hidden = status_ === 'rejected';
+    restoreBtn.hidden = status_ === 'unreviewed';
+    confirmBtn.onclick = () => reviewPainPoint(p.id, 'confirmed');
+    rejectBtn.onclick = () => reviewPainPoint(p.id, 'rejected');
+    restoreBtn.onclick = () => reviewPainPoint(p.id, 'unreviewed');
+
+    const editBtn = node.querySelector('.pc-edit');
+    const editForm = node.querySelector('.pc-edit-form');
+    editBtn.onclick = () => {
+      if (!editForm.hidden) { editForm.hidden = true; return; }
+      editForm.querySelector('.edit-surface_problem').value = p.surface_problem;
+      editForm.querySelector('.edit-deep_desire').value = p.deep_desire;
+      editForm.querySelector('.edit-detail').value = p.detail || '';
+      editForm.hidden = false;
+    };
+    editForm.querySelector('.pc-edit-cancel').onclick = () => { editForm.hidden = true; };
+    editForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      try {
+        await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            pain_point_id: p.id,
+            review_status: 'edited',
+            surface_problem: editForm.querySelector('.edit-surface_problem').value.trim(),
+            deep_desire: editForm.querySelector('.edit-deep_desire').value.trim(),
+            detail: editForm.querySelector('.edit-detail').value.trim(),
+          }),
+        });
+        setStatus('已更新痛點內容。');
+        await loadPainPoints();
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    });
 
     list.append(node);
   });
@@ -283,7 +453,64 @@ $('#manual-pain-form').addEventListener('submit', async e => {
 
 // ---------------- 洞察報告 ----------------
 
+let currentReportData = null; // { report, meta } — 保留最後一次渲染的報告，供排序切換時重用不必重打 API
+
+const REVIEW_STATUS_ORDER = { rejected: 0, unreviewed: 1, edited: 2, confirmed: 3 };
+
+function sortReportPainPoints(points, sortKey) {
+  const copy = [...points];
+  switch (sortKey) {
+    case 'confidence_asc':
+      return copy.sort((a, b) => (a.confidence_score ?? -1) - (b.confidence_score ?? -1));
+    case 'status':
+      return copy.sort((a, b) => (REVIEW_STATUS_ORDER[a.review_status] ?? 1) - (REVIEW_STATUS_ORDER[b.review_status] ?? 1));
+    case 'evidence_desc':
+      return copy.sort((a, b) => (b.evidence_count || 0) - (a.evidence_count || 0));
+    case 'confidence_desc':
+    default:
+      return copy.sort((a, b) => (b.confidence_score ?? -1) - (a.confidence_score ?? -1));
+  }
+}
+
+function renderReportBreakdown(container, points, sortKey) {
+  container.innerHTML = '';
+  if (!points.length) {
+    container.innerHTML = '<p class="muted">此領域設定尚無痛點資料。</p>';
+    return;
+  }
+  sortReportPainPoints(points, sortKey).forEach(p => {
+    const node = $('#report-row-tpl').content.cloneNode(true);
+    node.querySelector('.rr-surface').textContent = p.surface_problem;
+    node.querySelector('.rr-desire').textContent = p.deep_desire;
+
+    const stamp = node.querySelector('.rr-stamp');
+    const st = p.review_status || 'unreviewed';
+    stamp.className = 'stamp rr-stamp ' + st;
+    stamp.textContent = STAMP_LABEL[st] || st;
+
+    const pct = p.confidence_score != null ? Math.round(p.confidence_score * 100) : 0;
+    node.querySelector('.rr-bar').style.width = pct + '%';
+
+    node.querySelector('.rr-source').textContent = SOURCE_LABEL[p.source] || p.source || '—';
+    node.querySelector('.rr-evidence').innerHTML = `佐證 <span class="num">${p.evidence_count || 0}</span> 則語料`;
+    node.querySelector('.rr-confidence').innerHTML = p.confidence_score != null
+      ? `置信度 <span class="num">${pct}%</span>`
+      : '置信度 <span class="num">—</span>';
+
+    const solEl = node.querySelector('.rr-solution');
+    if (p.solution) {
+      const fit = p.solution.fit_score != null ? `｜適配度 <span class="num">${Math.round(p.solution.fit_score * 100)}%</span>` : '';
+      solEl.innerHTML = `<div class="framework-box"><b>${esc(p.solution.product_name)}</b> — ${esc(p.solution.core_selling_point)}${fit}</div>`;
+    } else {
+      solEl.innerHTML = '<span class="no-solution">尚未配對解決方案</span>';
+    }
+
+    container.append(node);
+  });
+}
+
 function renderReport(report, meta) {
+  currentReportData = { report, meta };
   const container = $('#report-result');
   container.innerHTML = '';
   const node = $('#report-tpl').content.cloneNode(true);
@@ -304,8 +531,10 @@ function renderReport(report, meta) {
     ['有語料佐證', c.with_evidence, false],
     ['已人工確認', c.confirmed, false],
     ['尚未複核', c.unreviewed, c.unreviewed > 0],
+    ['已駁回', c.rejected, false],
     ['已配對解決方案', c.with_matched_solution, false],
     ['平均置信度', c.avg_confidence_score != null ? Math.round(c.avg_confidence_score * 100) + '%' : '—', false],
+    ['平均適配度', c.avg_fit_score != null ? Math.round(c.avg_fit_score * 100) + '%' : '—', false],
   ];
   const statGrid = node.querySelector('.r-stats');
   stats.forEach(([label, value, warn]) => {
@@ -330,8 +559,17 @@ function renderReport(report, meta) {
     ? `初步框架建議：<b>${esc(fw.name)}</b> — ${esc(fw.reason)}`
     : '';
 
+  const sortSelect = node.querySelector('.r-sort');
+  const breakdownEl = node.querySelector('.r-breakdown');
+  const points = Array.isArray(report.pain_points) ? report.pain_points : [];
+  renderReportBreakdown(breakdownEl, points, sortSelect.value);
+  sortSelect.addEventListener('change', () => renderReportBreakdown(breakdownEl, points, sortSelect.value));
+
+  node.querySelector('.r-print').onclick = () => window.print();
+
   container.append(node);
   container.hidden = false;
+  container.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 $('#generate-report-btn').onclick = async () => {
