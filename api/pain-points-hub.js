@@ -11,8 +11,18 @@ const SUGGEST_AI_BUDGET_MS = Number(process.env.SUGGEST_AI_BUDGET_MS || 40000);
 const EXTRACT_AI_BUDGET_MS = Number(process.env.EXTRACT_AI_BUDGET_MS || 25000);
 const EXTRACT_MAX_BATCH_SIZE = 20;
 
+async function handleList(req, res, user, profileId) {
+  try {
+    const points = await restRequest(
+      `audience_pain_points?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=*&order=created_at.desc`
+    );
+    return res.status(200).json(points);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 async function handleCreate(req, res, user, profileId) {
-  if (req.method !== 'POST') return sendError(res, 405, '不支援的方法。');
   const { surface_problem, deep_desire, source } = req.body || {};
   if (!surface_problem || !deep_desire) {
     return sendError(res, 400, '請填寫表層問題與深層渴望。');
@@ -36,6 +46,38 @@ async function handleCreate(req, res, user, profileId) {
   } catch (err) {
     return sendError(res, 500, err.message);
   }
+}
+
+// 人工複核：確認／修改／駁回一筆痛點。這是「痛點驗證層」的核心操作，
+// 使用者標註的結果（review_status）會直接影響 insight-reports 報告裡的覆蓋率統計。
+async function handleReview(req, res, user, profileId) {
+  const { pain_point_id, review_status, surface_problem, deep_desire } = req.body || {};
+  if (!pain_point_id) return sendError(res, 400, '缺少 pain_point_id。');
+  if (!['confirmed', 'edited', 'rejected', 'unreviewed'].includes(review_status)) {
+    return sendError(res, 400, 'review_status 必須是 confirmed／edited／rejected／unreviewed 其中之一。');
+  }
+  const patch = { review_status };
+  if (review_status === 'edited') {
+    if (surface_problem) patch.surface_problem = surface_problem;
+    if (deep_desire) patch.deep_desire = deep_desire;
+  }
+  try {
+    const updated = await restRequest(
+      `audience_pain_points?id=eq.${pain_point_id}&domain_profile_id=eq.${profileId}&user_id=eq.${user.id}`,
+      { method: 'PATCH', prefer: 'return=representation', body: patch }
+    );
+    if (!updated.length) return sendError(res, 404, '找不到對應的痛點。');
+    return res.status(200).json(updated[0]);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+async function dispatchDefault(req, res, user, profileId) {
+  if (req.method === 'GET') return handleList(req, res, user, profileId);
+  if (req.method === 'POST') return handleCreate(req, res, user, profileId);
+  if (req.method === 'PATCH') return handleReview(req, res, user, profileId);
+  return sendError(res, 405, '不支援的方法。');
 }
 
 async function handleSuggest(req, res, user, profileId) {
@@ -167,6 +209,6 @@ module.exports = async (req, res) => {
 
   if (action === 'suggest') return handleSuggest(req, res, user, profileId);
   if (action === 'extract') return handleExtract(req, res, user, profileId);
-  if (!action) return handleCreate(req, res, user, profileId);
+  if (!action) return dispatchDefault(req, res, user, profileId);
   return sendError(res, 400, '不支援的 action。');
 };
