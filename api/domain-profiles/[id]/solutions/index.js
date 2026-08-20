@@ -3,9 +3,22 @@ const { getUserFromRequest, restRequest, sendError } = require('../../../_lib/su
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
-  if (req.method !== 'POST') return sendError(res, 405, '不支援的方法。');
 
   const { id: profileId } = req.query;
+
+  if (req.method === 'GET') {
+    try {
+      const solutions = await restRequest(
+        `product_solutions?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=*&order=created_at.desc`
+      );
+      return res.status(200).json(solutions);
+    } catch (err) {
+      return sendError(res, 500, err.message);
+    }
+  }
+
+  if (req.method !== 'POST') return sendError(res, 405, '不支援的方法。');
+
   const { pain_point_id, product_name, core_selling_point, solution_description, trust_proof } = req.body || {};
   if (!pain_point_id || !product_name || !core_selling_point || !solution_description) {
     return sendError(res, 400, '請完整填寫產品名稱、核心賣點與解決方案說明。');
