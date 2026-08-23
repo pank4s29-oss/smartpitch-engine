@@ -14,6 +14,45 @@ const EXTRACT_MAX_BATCH_SIZE = 20;
 
 const norm = s => (s || '').trim().toLowerCase();
 
+// ── 跨批次去重合併 ──────────────────────────────────────────────────────
+// 語料量一大，使用者通常得分好幾批送去分析（單批最多 EXTRACT_MAX_BATCH_SIZE 筆），
+// 同一個痛點很容易在不同批次裡各自被 AI 萃取出來一次，變成好幾筆幾乎一樣的紀錄，
+// 稀釋掉「這個痛點到底有多少真實佐證」的可信度。
+// 這裡用「字元 bigram」做 Jaccard 相似度來判斷兩個痛點是否應視為同一個——中文沒有天然的
+// 分詞界線，bigram 是不需要額外 NLP 套件、也不用再多打一次 AI 的簡單做法（AI 呼叫額度本來就
+// 吃緊，能用純運算解決的步驟就不要再消耗額度）。
+function bigrams(s) {
+  const clean = norm(s).replace(/[\s、，。！？~～\-()（）「」『』]/g, '');
+  const set = new Set();
+  for (let i = 0; i < clean.length - 1; i++) set.add(clean.slice(i, i + 2));
+  if (!set.size && clean) set.add(clean); // 只有 1 個字時退化成整串比對，避免 bigram 集合永遠是空的
+  return set;
+}
+function bigramSimilarity(a, b) {
+  const A = bigrams(a), B = bigrams(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const g of A) if (B.has(g)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+// 表層問題與深層渴望都要達到一定相似度才視為同一個痛點——只有其中一句像，
+// 常常只是主題相近但實際上是不同的痛點，不應該被合併成一筆。
+const DUP_SURFACE_THRESHOLD = 0.45;
+const DUP_DESIRE_THRESHOLD = 0.35;
+function findExistingMatch(candidate, existingPoints, usedIds) {
+  let best = null, bestScore = 0;
+  for (const ep of existingPoints) {
+    if (usedIds.has(ep.id)) continue; // 同一批次裡若有兩個 candidate 都很像，只讓最像的那個去合併，避免互相覆蓋
+    const surfaceSim = bigramSimilarity(candidate.surface_problem, ep.surface_problem);
+    const desireSim = bigramSimilarity(candidate.deep_desire, ep.deep_desire);
+    if (surfaceSim >= DUP_SURFACE_THRESHOLD && desireSim >= DUP_DESIRE_THRESHOLD) {
+      const score = surfaceSim + desireSim;
+      if (score > bestScore) { bestScore = score; best = ep; }
+    }
+  }
+  return best;
+}
+
 async function handleList(req, res, user, profileId) {
   try {
     const points = await restRequest(
@@ -187,34 +226,85 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
       return res.status(200).json({ pain_points: [], message: '這批語料中沒有萃取到有明確佐證的痛點，可嘗試選擇其他語料。' });
     }
 
-    const rows = parsed.pain_points.map(p => {
+    const candidates = parsed.pain_points.map(p => {
       const indices = Array.isArray(p.evidence_indices) ? p.evidence_indices.filter(i => feedbacks[i]) : [];
       const evidence_source = indices.map(i => ({ raw_customer_feedback_id: feedbacks[i].id, quote: p.quote || null }));
       return {
-        user_id: user.id,
-        domain_profile_id: profileId,
         surface_problem: p.surface_problem,
         deep_desire: p.deep_desire,
         detail: p.detail || null,
-        source: 'raw_feedback_extraction',
         evidence_source,
-        confidence_score: indices.length ? Math.min(1, indices.length / feedbacks.length) : null,
-        review_status: 'unreviewed',
       };
-    }).filter(r => r.surface_problem && r.deep_desire && r.evidence_source.length);
+    }).filter(c => c.surface_problem && c.deep_desire && c.evidence_source.length);
 
-    if (!rows.length) {
+    if (!candidates.length) {
       return res.status(200).json({ pain_points: [], message: '模型回傳的痛點缺少有效佐證，未寫入資料庫，可嘗試選擇其他語料。' });
     }
 
-    const savedPoints = await restRequest('audience_pain_points', {
-      method: 'POST',
-      prefer: 'return=representation',
-      body: rows,
+    // 全域置信度：分母改用「這個產品/服務設定底下匯入過的所有語料筆數」，而不是這次分析的
+    // 批次大小。使用者常常得把語料拆成好幾批送去分析（單批最多 EXTRACT_MAX_BATCH_SIZE 筆），
+    // 如果分母只看當下這批，同一個痛點的置信度會因為切分方式不同而忽高忽低，
+    // 沒辦法反映「這個痛點在你全部語料中的實際佔比」。
+    const allFeedbackIds = await restRequest(
+      `raw_customer_feedback?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=id`
+    );
+    const totalFeedbackCount = Math.max(allFeedbackIds.length, feedbacks.length);
+
+    // 跨批次去重合併：跟這個產品/服務設定底下「已存在」的痛點比對，相似度夠高就合併證據，
+    // 而不是各自散落成好幾筆幾乎一樣的紀錄（見檔案開頭的 findExistingMatch 說明）。
+    const existingPoints = await restRequest(
+      `audience_pain_points?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=id,surface_problem,deep_desire,evidence_source,review_status`
+    );
+
+    const usedExistingIds = new Set();
+    const toInsert = [];
+    const toMerge = [];
+    candidates.forEach(c => {
+      const match = findExistingMatch(c, existingPoints, usedExistingIds);
+      if (!match) { toInsert.push(c); return; }
+      usedExistingIds.add(match.id);
+      const existingEvidence = Array.isArray(match.evidence_source) ? match.evidence_source : [];
+      const seenFeedbackIds = new Set(existingEvidence.map(e => e.raw_customer_feedback_id));
+      const newEvidence = c.evidence_source.filter(e => !seenFeedbackIds.has(e.raw_customer_feedback_id));
+      toMerge.push({ existing: match, mergedEvidence: existingEvidence.concat(newEvidence), hasNewEvidence: newEvidence.length > 0 });
     });
 
+    const insertRows = toInsert.map(c => ({
+      user_id: user.id,
+      domain_profile_id: profileId,
+      surface_problem: c.surface_problem,
+      deep_desire: c.deep_desire,
+      detail: c.detail,
+      source: 'raw_feedback_extraction',
+      evidence_source: c.evidence_source,
+      confidence_score: Math.min(1, c.evidence_source.length / totalFeedbackCount),
+      review_status: 'unreviewed',
+    }));
+
+    const savedNew = insertRows.length
+      ? await restRequest('audience_pain_points', { method: 'POST', prefer: 'return=representation', body: insertRows })
+      : [];
+
+    const savedMerged = [];
+    for (const m of toMerge) {
+      if (!m.hasNewEvidence) { savedMerged.push(m.existing); continue; } // 沒有新證據就不用多打一次 PATCH
+      const patch = {
+        evidence_source: m.mergedEvidence,
+        confidence_score: Math.min(1, m.mergedEvidence.length / totalFeedbackCount),
+      };
+      // 已經被使用者確認／編輯過的痛點，尊重使用者的判斷，不覆蓋文字內容，
+      // 只補上新的證據並重新計算置信度。
+      const [updated] = await restRequest(
+        `audience_pain_points?id=eq.${m.existing.id}&user_id=eq.${user.id}`,
+        { method: 'PATCH', prefer: 'return=representation', body: patch }
+      );
+      savedMerged.push(updated || m.existing);
+    }
+
+    const allSaved = [...savedNew, ...savedMerged];
+
     const pointIdsByFeedback = new Map();
-    savedPoints.forEach(point => {
+    allSaved.forEach(point => {
       (point.evidence_source || []).forEach(e => {
         const list = pointIdsByFeedback.get(e.raw_customer_feedback_id) || [];
         list.push(point.id);
@@ -229,7 +319,11 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
       }))
     );
 
-    return res.status(200).json({ pain_points: savedPoints });
+    const message = toMerge.length
+      ? `已萃取 ${candidates.length} 筆痛點：${savedNew.length} 筆為新痛點，另外 ${toMerge.length} 筆與既有痛點高度相似，已合併證據並更新置信度（不會出現重複的痛點卡片）。`
+      : `已萃取 ${savedNew.length} 筆有語料佐證的痛點。`;
+
+    return res.status(200).json({ pain_points: allSaved, created_count: savedNew.length, merged_count: toMerge.length, message });
   } catch (err) {
     return sendError(res, 500, err.message);
   }
