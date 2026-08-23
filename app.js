@@ -978,22 +978,61 @@ swipeForm.addEventListener('submit', async e => {
   const submitBtn = swipeForm.querySelector('button[type="submit"]');
   // 這支會即時呼叫 AI 拆解文案結構，同樣要擋掉手滑連點造成的重複呼叫。
   if (submitBtn) submitBtn.disabled = true;
-  swipeStatus.textContent = '正在拆解結構與標籤…';
+  swipeStatus.textContent = '正在分析受眾痛點與身份洞察…';
   try {
     const item = await api('/api/swipe-copies', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(swipeForm))) });
-    swipeStatus.textContent = `已分類：${item.industry_tag}／${item.framework_tag}／${item.emotion_tags.join('、')}。`;
+    const painCount = Array.isArray(item.extracted_pain_points) ? item.extracted_pain_points.length : 0;
+    swipeStatus.textContent = `已分類：${item.industry_tag}／${item.framework_tag}。萃取到 ${painCount} 組受眾痛點與身份洞察。`;
     swipeForm.reset();
     loadSwipes();
   } catch (err) { swipeStatus.textContent = '⚠ ' + err.message; }
   finally { if (submitBtn) submitBtn.disabled = false; }
 });
 
+function swipeCardHtml(x) {
+  const painPoints = Array.isArray(x.extracted_pain_points) ? x.extracted_pain_points : [];
+  const insightHtml = painPoints.length
+    ? `<div class="swipe-insights">` + painPoints.map(p => `
+        <div class="swipe-insight-item">
+          <p class="swipe-insight-surface">${esc(p.surface_problem)}</p>
+          ${p.identity_appeal ? `<p class="swipe-insight-identity"><b>身份認同：</b>${esc(p.identity_appeal)}</p>` : ''}
+          ${p.why_targeted ? `<p class="swipe-insight-why"><b>為什麼鎖定：</b>${esc(p.why_targeted)}</p>` : ''}
+        </div>`).join('') + `</div>`
+    : `<p class="muted">尚未萃取出可用的受眾洞察（可能是舊資料，點「重新分析」用最新邏輯重跑一次）。</p>`;
+
+  return `<article class="pain-card">
+    <strong>${esc(x.industry_tag)} · ${esc(x.framework_tag)}</strong><br>
+    <span class="muted">${esc((x.emotion_tags || []).join('、'))}｜${esc((x.block_breakdown || []).join(' → '))}</span>
+    <p>${esc(x.raw_content.slice(0, 140))}${x.raw_content.length > 140 ? '…' : ''}</p>
+    ${insightHtml}
+    <div class="pain-actions">
+      <button data-id="${esc(x.id)}" class="small ghost reanalyze">重新分析</button>
+      <button data-id="${esc(x.id)}" class="small danger ghost delete">刪除</button>
+    </div>
+  </article>`;
+}
+
 async function loadSwipes() {
   try {
     const items = await api('/api/swipe-copies');
-    swipeList.innerHTML = items.length ? items.map(x => `<article class="pain-card"><strong>${esc(x.industry_tag)} · ${esc(x.framework_tag)}</strong><br><span class="muted">${esc(x.emotion_tags.join('、'))}｜${esc(x.block_breakdown.join(' → '))}</span><p>${esc(x.raw_content.slice(0, 140))}${x.raw_content.length > 140 ? '…' : ''}</p><button data-id="${esc(x.id)}" class="small ghost delete">刪除</button></article>`).join('') : '<p class="muted">尚無已儲存的範例文案。</p>';
+    swipeList.innerHTML = items.length ? items.map(swipeCardHtml).join('') : '<p class="muted">尚無已儲存的範例文案。</p>';
     swipeList.querySelectorAll('.delete').forEach(b => b.onclick = async () => {
       if (confirm('確定刪除這篇範例？')) { await api('/api/swipe-copies/' + b.dataset.id, { method: 'DELETE' }); loadSwipes(); }
+    });
+    // 重新分析：用最新的分析邏輯（優先萃取受眾痛點／為什麼鎖定／身份認同，不再因為文案沒把
+    // 問題講白就回傳空陣列）重跑舊資料，不用使用者自己刪除重貼一次。
+    swipeList.querySelectorAll('.reanalyze').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      const original = b.textContent;
+      b.textContent = '重新分析中…';
+      try {
+        await api('/api/swipe-copies/' + b.dataset.id, { method: 'PUT', body: JSON.stringify({ reanalyze: true }) });
+        await loadSwipes();
+      } catch (err) {
+        setStatus('⚠ ' + err.message, true);
+        b.disabled = false;
+        b.textContent = original;
+      }
     });
   } catch (e) { swipeList.textContent = '無法載入資料庫。'; }
 }
