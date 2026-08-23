@@ -72,6 +72,12 @@
 <button type="submit">匯入語料</button>
 </form>
 <hr class="divider">
+<details class="csv-import">
+<summary><strong>或上傳 CSV 檔案批次匯入</strong><span class="muted">適合整批匯出的評論、問卷回覆、客服紀錄</span></summary>
+<p class="muted" style="margin:10px 0 12px">請先在上方選擇語料來源分類，再上傳 CSV。系統會讀取表頭欄位，讓你指定哪一欄是語料內容，日期與評分則為選填；其餘欄位會整批存成補充資訊，供之後分析使用。</p>
+<input type="file" id="csv-file-input" accept=".csv,text/csv">
+<div id="csv-mapping-panel"></div>
+</details>
 <div id="feedback-list"><p class="muted">尚無已匯入的語料。</p></div>
 <button type="button" id="extract-btn" class="secondary" disabled>對已勾選的語料開始分析 →</button>
 </section>
