@@ -259,6 +259,24 @@ button.small { padding: 5px 10px; font-size: 12.5px; }
 }
 .segment-differentiation b { font-family: var(--font-mono); font-weight: 600; }
 
+/* ---------- CSV / 檔案匯入 ---------- */
+
+details.csv-import {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 4px 0 18px;
+}
+details.csv-import summary {
+  cursor: pointer; list-style: none;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+details.csv-import summary::-webkit-details-marker { display: none; }
+details.csv-import[open] summary { margin-bottom: 4px; }
+#csv-file-input { margin: 10px 0; }
+.csv-preview { margin-top: 10px; }
+.csv-preview .feedback-item { background: var(--paper); }
+
 /* ---------- 語料項目 ---------- */
 
 .feedback-item {
