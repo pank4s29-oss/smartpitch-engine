@@ -10,7 +10,25 @@ const { getUserFromRequest, restRequest, sendError } = require('./_lib/supabase'
 const DEFAULT_LABELS = ['社群貼文分享', '顧客評論', '客服對話', '問卷回饋', '訪談逐字稿', '其他'];
 const MAX_LABEL_LENGTH = 20;
 const MAX_TEXT_LENGTH = 5000;
-const MAX_BATCH_SIZE = 50;
+// CSV／結構化批次匯入常常一次就有上百列，原本 50 筆的上限對日常素材（例如整批匯出的評論）
+// 太保守；前端會依這個上限自動切批送出，這裡只要放寬到合理範圍即可。
+const MAX_BATCH_SIZE = 200;
+
+// 把使用者輸入或 CSV 欄位裡的日期字串正規化成 ISO 字串；無法解析就當作沒有提供，不擋匯入。
+function normalizeDate(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// 把評分正規化到 0-5 的範圍；無法解析或超出合理範圍就當作沒有提供，不擋匯入
+// （評分本來就是輔助資訊，不應該因為格式不完美就讓整筆語料匯入失敗）。
+function normalizeRating(v) {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  if (Number.isNaN(n)) return null;
+  return Math.max(0, Math.min(5, n));
+}
 
 async function handleList(req, res, user) {
   const { domain_profile_id, limit } = req.query || {};
@@ -27,19 +45,36 @@ async function handleList(req, res, user) {
 }
 
 async function handleCreate(req, res, user) {
-  const { domain_profile_id, source_type, raw_text, raw_texts } = req.body || {};
+  const { domain_profile_id, source_type, raw_text, raw_texts, items } = req.body || {};
 
   const sourceType = (source_type || '').trim();
   if (!sourceType) return sendError(res, 400, '請選擇語料來源分類。');
   if (sourceType.length > MAX_LABEL_LENGTH) return sendError(res, 400, `分類名稱不可超過 ${MAX_LABEL_LENGTH} 字。`);
 
-  const texts = (Array.isArray(raw_texts) ? raw_texts : [raw_text])
-    .filter(t => typeof t === 'string' && t.trim())
-    .map(t => t.trim());
+  // 兩種匯入路徑統一轉成同一種內部格式（rows）再寫入：
+  //   1. items：結構化匯入（例如前端解析 CSV 後送來），每筆可以帶 occurred_at／rating／meta，
+  //      讓語料除了純文字之外，還能保留「這則語料本身的日期、評分，以及其他原始欄位」這些脈絡。
+  //   2. raw_text／raw_texts：既有的純文字貼上匯入，維持原本行為，日期/評分一律是空值。
+  let rows;
+  if (Array.isArray(items) && items.length) {
+    rows = items
+      .map(it => ({
+        raw_text: typeof (it && it.raw_text) === 'string' ? it.raw_text.trim() : '',
+        occurred_at: normalizeDate(it && it.occurred_at),
+        rating: normalizeRating(it && it.rating),
+        meta: (it && it.meta && typeof it.meta === 'object' && !Array.isArray(it.meta)) ? it.meta : {},
+      }))
+      .filter(r => r.raw_text);
+  } else {
+    const texts = (Array.isArray(raw_texts) ? raw_texts : [raw_text])
+      .filter(t => typeof t === 'string' && t.trim())
+      .map(t => t.trim());
+    rows = texts.map(text => ({ raw_text: text, occurred_at: null, rating: null, meta: {} }));
+  }
 
-  if (!texts.length) return sendError(res, 400, '請提供至少一筆語料內容（raw_text 或 raw_texts）。');
-  if (texts.length > MAX_BATCH_SIZE) return sendError(res, 400, `單次最多匯入 ${MAX_BATCH_SIZE} 筆語料，請分批匯入。`);
-  const tooLong = texts.find(t => t.length > MAX_TEXT_LENGTH);
+  if (!rows.length) return sendError(res, 400, '請提供至少一筆語料內容（raw_text／raw_texts，或結構化的 items）。');
+  if (rows.length > MAX_BATCH_SIZE) return sendError(res, 400, `單次最多匯入 ${MAX_BATCH_SIZE} 筆語料，請分批匯入。`);
+  const tooLong = rows.find(r => r.raw_text.length > MAX_TEXT_LENGTH);
   if (tooLong) return sendError(res, 400, `單篇語料內容不可超過 ${MAX_TEXT_LENGTH} 字，請縮短後再匯入（可考慮拆成多篇）。`);
 
   try {
@@ -48,17 +83,20 @@ async function handleCreate(req, res, user) {
       if (!owned.length) return sendError(res, 404, '找不到對應的產品/服務設定。');
     }
 
-    const rows = texts.map(raw_text => ({
+    const dbRows = rows.map(r => ({
       user_id: user.id,
       domain_profile_id: domain_profile_id || null,
       source_type: sourceType,
-      raw_text,
+      raw_text: r.raw_text,
+      occurred_at: r.occurred_at,
+      rating: r.rating,
+      meta: r.meta,
     }));
 
     const saved = await restRequest('raw_customer_feedback', {
       method: 'POST',
       prefer: 'return=representation',
-      body: rows.length === 1 ? rows[0] : rows,
+      body: dbRows.length === 1 ? dbRows[0] : dbRows,
     });
 
     const savedList = Array.isArray(saved) ? saved : [saved];
