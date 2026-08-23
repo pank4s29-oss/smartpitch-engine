@@ -263,6 +263,18 @@ async function loadFeedback() {
   } catch (e) { setStatus('⚠ ' + e.message, true); }
 }
 
+// 語料的標籤列：來源分類 + （若有）原始日期 + （若有）評分。日期／評分是 CSV／結構化匯入
+// 才會有的欄位，純文字貼上匯入的語料這兩欄會是空的，不影響顯示。
+function feedbackTag(f) {
+  const parts = [SOURCE_TYPE_LABEL[f.source_type] || f.source_type];
+  if (f.occurred_at) {
+    const d = new Date(f.occurred_at);
+    if (!Number.isNaN(d.getTime())) parts.push(d.toLocaleDateString('zh-TW'));
+  }
+  if (f.rating !== null && f.rating !== undefined) parts.push(`${f.rating}★`);
+  return parts.join(' · ');
+}
+
 function renderFeedbackList() {
   const list = $('#feedback-list');
   if (!feedbackCache.length) { list.innerHTML = '<p class="muted">尚無已匯入的語料。</p>'; updateExtractBtn(); return; }
@@ -271,7 +283,7 @@ function renderFeedbackList() {
     const node = $('#feedback-item-tpl').content.cloneNode(true);
     const item = node.querySelector('.feedback-item');
     item.dataset.id = f.id;
-    node.querySelector('.source-tag').textContent = SOURCE_TYPE_LABEL[f.source_type] || f.source_type;
+    node.querySelector('.source-tag').textContent = feedbackTag(f);
     node.querySelector('.fb-body').textContent = f.raw_text.length > 160 ? f.raw_text.slice(0, 160) + '…' : f.raw_text;
     node.querySelector('.fb-check').onchange = updateExtractBtn;
     node.querySelector('.fb-delete').onclick = async () => {
@@ -305,6 +317,148 @@ $('#feedback-form').addEventListener('submit', async e => {
     await loadFeedback();
   } catch (err) { setStatus('⚠ ' + err.message, true); }
 });
+
+// ---------------- CSV / 檔案匯入 ----------------
+// 讓「日常素材」不用先手動整理成一則一則貼上的文字——顧客評論匯出檔、問卷回覆、
+// 客服紀錄常常是 CSV，這裡直接讀檔、抓表頭、讓使用者指定欄位對應，其餘欄位自動收進 meta。
+// 純前端解析，不依賴任何第三方套件，避免額外的相依性與載入時間。
+
+let csvHeaders = [];
+let csvRows = []; // 陣列，每個元素是 { 欄位名稱: 值 }，不含表頭列
+
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], next = text[i + 1];
+    if (inQuotes) {
+      if (c === '"' && next === '"') { field += '"'; i++; }
+      else if (c === '"') { inQuotes = false; }
+      else field += c;
+    } else if (c === '"') { inQuotes = true; }
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (c === '\r') { /* 忽略，換行以 \n 為準 */ }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => !(r.length === 1 && r[0] === ''));
+}
+
+const csvFileInput = $('#csv-file-input');
+const csvMappingPanel = $('#csv-mapping-panel');
+
+if (csvFileInput && csvMappingPanel) {
+  csvFileInput.addEventListener('change', async () => {
+    const file = csvFileInput.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = parseCSV(text);
+      if (parsed.length < 2) throw new Error('這個檔案看起來沒有資料列（至少需要標題列 + 1 列資料）。');
+      csvHeaders = parsed[0].map(h => h.trim()).filter(Boolean);
+      csvRows = parsed.slice(1).map(r => Object.fromEntries(csvHeaders.map((h, i) => [h, (r[i] || '').trim()])));
+      renderCsvMapping();
+    } catch (err) {
+      setStatus('⚠ CSV 解析失敗：' + err.message, true);
+    }
+  });
+}
+
+function csvColumnOptions(guess) {
+  return '<option value="">— 不對應 —</option>' +
+    csvHeaders.map(h => `<option value="${esc(h)}"${h === guess ? ' selected' : ''}>${esc(h)}</option>`).join('');
+}
+
+function renderCsvMapping() {
+  const guessTextCol = csvHeaders.find(h => /內容|文字|評論|留言|content|text|comment|feedback/i.test(h)) || csvHeaders[0];
+  const guessDateCol = csvHeaders.find(h => /日期|時間|date|time/i.test(h)) || '';
+  const guessRatingCol = csvHeaders.find(h => /評分|星|rating|score/i.test(h)) || '';
+
+  csvMappingPanel.innerHTML = `
+    <p class="muted" style="margin-top:14px">共讀到 <span class="num">${csvRows.length}</span> 列資料，請確認欄位對應：</p>
+    <div class="grid">
+      <label>語料內容欄位（必填）<select class="csv-map" data-field="raw_text">${csvColumnOptions(guessTextCol)}</select></label>
+      <label>日期欄位（選填）<select class="csv-map" data-field="occurred_at">${csvColumnOptions(guessDateCol)}</select></label>
+      <label>評分欄位（選填，0-5）<select class="csv-map" data-field="rating">${csvColumnOptions(guessRatingCol)}</select></label>
+    </div>
+    <p class="muted" style="margin:2px 0 12px">其餘未對應的欄位會整批存成補充資訊（meta），不會遺失，未來分析可以用得上。</p>
+    <div class="csv-preview"></div>
+    <button type="button" id="csv-import-confirm" class="secondary" style="margin-top:12px">確認匯入這 ${csvRows.length} 筆</button>
+  `;
+  renderCsvPreview();
+  csvMappingPanel.querySelectorAll('.csv-map').forEach(sel => sel.addEventListener('change', renderCsvPreview));
+  $('#csv-import-confirm').onclick = submitCsvImport;
+}
+
+function currentCsvMapping() {
+  const map = {};
+  csvMappingPanel.querySelectorAll('.csv-map').forEach(sel => { map[sel.dataset.field] = sel.value; });
+  return map;
+}
+
+function renderCsvPreview() {
+  const map = currentCsvMapping();
+  const preview = csvMappingPanel.querySelector('.csv-preview');
+  if (!preview) return;
+  const sample = csvRows.slice(0, 3);
+  preview.innerHTML = sample.length ? sample.map(r => {
+    const tagBits = [];
+    if (map.occurred_at) tagBits.push(esc(r[map.occurred_at] || '—'));
+    if (map.rating) tagBits.push(esc(r[map.rating] || '—') + '★');
+    const body = map.raw_text ? (r[map.raw_text] || '').slice(0, 160) : '（尚未指定語料內容欄位）';
+    return `<div class="feedback-item"><div class="fb-text"><span class="source-tag">${tagBits.join(' · ')}</span><div class="fb-body">${esc(body)}</div></div></div>`;
+  }).join('') : '<p class="muted">無可預覽資料。</p>';
+}
+
+async function submitCsvImport() {
+  const map = currentCsvMapping();
+  if (!map.raw_text) return setStatus('⚠ 請先指定「語料內容欄位」。', true);
+  const sourceType = $('#source-type-select').value;
+  if (!sourceType) return setStatus('⚠ 請先在上方選擇語料來源分類，再匯入 CSV。', true);
+
+  const items = csvRows.map(r => {
+    const meta = {};
+    csvHeaders.forEach(h => {
+      if (h !== map.raw_text && h !== map.occurred_at && h !== map.rating && r[h]) meta[h] = r[h];
+    });
+    return {
+      raw_text: r[map.raw_text] || '',
+      occurred_at: map.occurred_at ? r[map.occurred_at] : undefined,
+      rating: map.rating ? r[map.rating] : undefined,
+      meta,
+    };
+  }).filter(it => it.raw_text && it.raw_text.trim());
+
+  if (!items.length) return setStatus('⚠ 沒有可匯入的資料列（語料內容欄位可能是空的）。', true);
+
+  const btn = $('#csv-import-confirm');
+  if (btn) btn.disabled = true;
+  setStatus(`正在匯入 ${items.length} 筆 CSV 資料…`);
+  try {
+    // 後端單次匯入上限是 MAX_BATCH_SIZE（目前 200），CSV 常常一次就有更多筆，
+    // 這裡自動依上限切批送出，使用者不用自己手動拆檔案或分好幾次上傳。
+    const CHUNK_SIZE = 200;
+    let imported = 0;
+    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+      const chunk = items.slice(i, i + CHUNK_SIZE);
+      const result = await api('/api/raw-feedback', {
+        method: 'POST',
+        body: JSON.stringify({ domain_profile_id: currentProfileId, source_type: sourceType, items: chunk }),
+      });
+      imported += result.imported;
+    }
+    setStatus(`已從 CSV 匯入 ${imported} 則語料。`);
+    csvRows = []; csvHeaders = [];
+    csvMappingPanel.innerHTML = '';
+    if (csvFileInput) csvFileInput.value = '';
+    await loadFeedback();
+  } catch (err) {
+    setStatus('⚠ ' + err.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
 
 $('#extract-btn').onclick = async () => {
   const ids = $$('.feedback-item').filter(el => el.querySelector('.fb-check').checked).map(el => el.dataset.id);
