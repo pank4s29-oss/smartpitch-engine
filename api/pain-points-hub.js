@@ -427,10 +427,16 @@ async function handleFromSwipe(req, res, user, profileId) {
         const key = norm(p.surface_problem);
         if (!p.surface_problem || !p.deep_desire || seen.has(key)) return;
         seen.add(key);
+        // detail 組成順序呼應分析時的優先順序：先講「為什麼鎖定這個痛點」與「受眾想被看見的形象」，
+        // 這兩項才是真正有洞察價值的部分；原文引用放最後，只是佐證用途。
+        const detailParts = [];
+        if (p.why_targeted) detailParts.push(`為什麼鎖定這個痛點：${p.why_targeted}`);
+        if (p.identity_appeal) detailParts.push(`受眾想被看見的形象／身份認同：${p.identity_appeal}`);
+        if (p.quote) detailParts.push(`文案原文片段：「${p.quote}」`);
         suggestions.push({
           surface_problem: p.surface_problem,
           deep_desire: p.deep_desire,
-          detail: p.quote ? `文案手法庫萃取，原文片段：「${p.quote}」` : null,
+          detail: detailParts.length ? detailParts.join('\n') : null,
           from_swipe_copy_id: s.id,
           from_industry_tag: s.industry_tag,
         });
