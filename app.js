@@ -195,11 +195,12 @@ function onProfileSelected(id) {
   const matchedTemplatesResult = $('#matched-templates-result');
   if (matchedTemplatesResult) matchedTemplatesResult.innerHTML = '';
   resetSegmentsPanel();
+  resetAdCopiesPanel();
   refreshProfileScope();
 }
 
 async function refreshProfileScope() {
-  await Promise.all([loadSourceLabels(), loadFeedback(), loadPainPoints(), loadReportHistory()]);
+  await Promise.all([loadSourceLabels(), loadFeedback(), loadPainPoints(), loadReportHistory(), loadAdCopies()]);
 }
 
 // ---------------- 語料來源分類管理 ----------------
@@ -1344,6 +1345,319 @@ if (reportLibraryPanel) {
   reportLibraryPanel.addEventListener('toggle', () => {
     if (reportLibraryPanel.open && !reportLibraryLoaded) { reportLibraryLoaded = true; loadReportLibrary(); }
   });
+}
+
+// ---------------- Meta 廣告效益驗證 ----------------
+// 對應「Meta 廣告知識庫與效益驗證系統」：文案進來先做 hash 去重，新文案才呼叫一次 AI
+// 標籤化，之後不管回灌幾次成效數據都是純資料庫寫入。這裡刻意不重新設計一套 CSV
+// parser——上面「語料匯入」區塊已經有寫好、測過的 parseCSV()，直接沿用。
+
+let adCopiesCache = [];
+
+function resetAdCopiesPanel() {
+  const list = $('#ad-copy-list');
+  if (list) list.innerHTML = '<p class="muted">尚無已匯入的廣告文案。</p>';
+  const countEl = $('#ad-copy-count');
+  if (countEl) countEl.textContent = '';
+  const matrixResult = $('#matrix-result');
+  if (matrixResult) matrixResult.innerHTML = '';
+  adCsvRows = []; adCsvHeaders = [];
+  const adCsvPanel = $('#ad-csv-mapping-panel');
+  if (adCsvPanel) adCsvPanel.innerHTML = '';
+  const adCsvInput = $('#ad-csv-file-input');
+  if (adCsvInput) adCsvInput.value = '';
+}
+
+async function loadAdCopies() {
+  if (!currentProfileId) return;
+  try {
+    adCopiesCache = await api(`/api/ad-copies?domain_profile_id=${currentProfileId}`);
+    renderAdCopyList();
+  } catch (e) { setStatus('⚠ ' + e.message, true); }
+}
+
+function pctLabel(v) { return v != null ? (Math.round(v * 10000) / 100) + '%' : '—'; }
+
+function adCopyTagsHtml(tags) {
+  if (!tags) return '<p class="muted" style="margin-top:8px">AI 標籤化進行中或尚未完成，稍後重新整理清單查看。</p>';
+  const secondary = (tags.secondary_pain_tags || []).map(t => `<span class="label-chip" style="cursor:default">${esc(t)}</span>`).join('');
+  return `
+    <div class="label-chips" style="margin-top:8px">
+      <span class="label-chip" style="cursor:default;font-weight:600">${esc(tags.primary_pain_tag)}</span>
+      ${secondary}
+    </div>
+    <p class="pain-meta" style="margin-top:8px">結構：${esc((tags.structure_blocks || []).join(' → ') || '—')}｜開頭手法：${esc(tags.hook_type || '—')}｜情緒：${esc(tags.emotion_tag || '—')}</p>
+    ${tags.target_audience_guess ? `<p class="muted" style="margin-top:2px">推測受眾：${esc(tags.target_audience_guess)}</p>` : ''}
+  `;
+}
+
+function adCopyPerfHtml(perf) {
+  if (!perf) return '<p class="muted" style="margin-top:8px">尚無成效數據，可在上方表單、CSV 或 Meta 同步中回灌。</p>';
+  return `<div class="pain-meta" style="margin-top:8px">
+    <span>花費 <span class="num">${perf.spend ?? '—'}</span></span>
+    <span>曝光 <span class="num">${perf.impressions ?? '—'}</span></span>
+    <span>點擊 <span class="num">${perf.clicks ?? '—'}</span></span>
+    <span>CTR <span class="num">${pctLabel(perf.ctr)}</span></span>
+    <span>CPA <span class="num">${perf.cpa ?? '—'}</span></span>
+    <span>CVR <span class="num">${pctLabel(perf.cvr)}</span></span>
+    ${perf.roas != null ? `<span>ROAS <span class="num">${perf.roas}</span></span>` : ''}
+  </div>`;
+}
+
+function adCopyCardHtml(c) {
+  const perf = Array.isArray(c.performance) ? c.performance[0] : c.performance;
+  const preview = c.raw_content.length > 140 ? c.raw_content.slice(0, 140) + '…' : c.raw_content;
+  const status_ = c.tagging_error ? 'rejected' : (c.ai_tags ? 'confirmed' : 'unreviewed');
+  const statusLabel = c.tagging_error ? '標籤化失敗' : (c.ai_tags ? '已標籤' : '處理中');
+  return `<article class="pain-card" data-id="${esc(c.id)}">
+    <div class="pain-card-top">
+      <div><h3 style="font-size:15px">${esc(preview)}</h3></div>
+      <span class="stamp ${status_}">${statusLabel}</span>
+    </div>
+    ${adCopyTagsHtml(c.ai_tags)}
+    ${c.tagging_error ? `<p class="muted" style="margin-top:6px">${esc(c.tagging_error)}</p>` : ''}
+    ${adCopyPerfHtml(perf)}
+    <div class="pain-actions" style="margin-top:10px">
+      <button type="button" class="small danger ghost ad-copy-delete">刪除</button>
+    </div>
+  </article>`;
+}
+
+function renderAdCopyList() {
+  const list = $('#ad-copy-list');
+  const countEl = $('#ad-copy-count');
+  if (!list) return;
+  if (countEl) countEl.textContent = adCopiesCache.length ? `共 ${adCopiesCache.length} 則廣告文案` : '';
+  if (!adCopiesCache.length) { list.innerHTML = '<p class="muted">尚無已匯入的廣告文案。</p>'; return; }
+  list.innerHTML = adCopiesCache.map(adCopyCardHtml).join('');
+  list.querySelectorAll('.ad-copy-delete').forEach((btn, i) => {
+    btn.onclick = async () => {
+      const c = adCopiesCache[i];
+      if (!confirm('確定要刪除這則廣告文案與其成效數據嗎？此操作無法復原。')) return;
+      try {
+        await api(`/api/ad-copies/${c.id}`, { method: 'DELETE' });
+        await loadAdCopies();
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    };
+  });
+}
+
+const adCopyForm = $('#ad-copy-form');
+if (adCopyForm) {
+  adCopyForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!currentProfileId) return;
+    const data = Object.fromEntries(new FormData(e.target));
+    const hasPerf = data.spend || data.impressions || data.clicks || data.conversions;
+    const body = {
+      domain_profile_id: currentProfileId,
+      platform: data.platform,
+      raw_content: data.raw_content,
+      performance: hasPerf ? {
+        spend: data.spend || undefined, impressions: data.impressions || undefined,
+        clicks: data.clicks || undefined, conversions: data.conversions || undefined,
+        source: 'manual',
+      } : undefined,
+    };
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    setStatus('正在處理廣告文案…');
+    try {
+      const result = await api('/api/ad-copies', { method: 'POST', body: JSON.stringify(body) });
+      setStatus(result.reused_existing ? '這則文案先前已存在，已更新成效數據（未消耗 AI 額度）。' : '已加入文案庫並完成標籤化。');
+      e.target.reset();
+      await loadAdCopies();
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { btn.disabled = false; }
+  });
+}
+
+// ── 廣告文案 CSV 批次匯入 ──────────────────────────────────────────────────
+let adCsvHeaders = [];
+let adCsvRows = [];
+
+const adCsvFileInput = $('#ad-csv-file-input');
+const adCsvMappingPanel = $('#ad-csv-mapping-panel');
+
+if (adCsvFileInput && adCsvMappingPanel) {
+  adCsvFileInput.addEventListener('change', async () => {
+    const file = adCsvFileInput.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = parseCSV(text); // 沿用「語料匯入」區塊已經寫好的 CSV parser
+      if (parsed.length < 2) throw new Error('這個檔案看起來沒有資料列（至少需要標題列 + 1 列資料）。');
+      adCsvHeaders = parsed[0].map(h => h.trim()).filter(Boolean);
+      adCsvRows = parsed.slice(1).map(r => Object.fromEntries(adCsvHeaders.map((h, i) => [h, (r[i] || '').trim()])));
+      renderAdCsvMapping();
+    } catch (err) {
+      setStatus('⚠ CSV 解析失敗：' + err.message, true);
+    }
+  });
+}
+
+function adCsvColumnOptions(guess) {
+  return '<option value="">— 不對應 —</option>' +
+    adCsvHeaders.map(h => `<option value="${esc(h)}"${h === guess ? ' selected' : ''}>${esc(h)}</option>`).join('');
+}
+
+function renderAdCsvMapping() {
+  const guess = re => adCsvHeaders.find(h => re.test(h)) || '';
+  const guessTextCol = guess(/文案|內容|body|ad\s*text|creative/i) || adCsvHeaders[0];
+  const guessAdIdCol = guess(/ad.?id|廣告\s*id/i);
+  const guessSpendCol = guess(/花費|金額|spend|cost/i);
+  const guessImpCol = guess(/曝光|impress/i);
+  const guessClickCol = guess(/點擊|click/i);
+  const guessConvCol = guess(/轉換|purchase|lead|conversion/i);
+
+  adCsvMappingPanel.innerHTML = `
+    <p class="muted" style="margin-top:14px">共讀到 <span class="num">${adCsvRows.length}</span> 列資料，請確認欄位對應：</p>
+    <div class="grid">
+      <label>文案內容欄位（必填）<select class="ad-csv-map" data-field="raw_content">${adCsvColumnOptions(guessTextCol)}</select></label>
+      <label>Meta 廣告 ID（選填）<select class="ad-csv-map" data-field="meta_ad_id">${adCsvColumnOptions(guessAdIdCol)}</select></label>
+    </div>
+    <div class="grid">
+      <label>花費欄位（選填）<select class="ad-csv-map" data-field="spend">${adCsvColumnOptions(guessSpendCol)}</select></label>
+      <label>曝光欄位（選填）<select class="ad-csv-map" data-field="impressions">${adCsvColumnOptions(guessImpCol)}</select></label>
+      <label>點擊欄位（選填）<select class="ad-csv-map" data-field="clicks">${adCsvColumnOptions(guessClickCol)}</select></label>
+      <label>轉換欄位（選填）<select class="ad-csv-map" data-field="conversions">${adCsvColumnOptions(guessConvCol)}</select></label>
+    </div>
+    <p class="muted" style="margin:2px 0 12px">同一份文案的內容若跟文案庫裡已有的一字不差，會直接更新成效、不會重複呼叫 AI。</p>
+    <button type="button" id="ad-csv-import-confirm" class="secondary" style="margin-top:4px">確認匯入這 ${adCsvRows.length} 筆</button>
+  `;
+  $('#ad-csv-import-confirm').onclick = submitAdCsvImport;
+}
+
+function currentAdCsvMapping() {
+  const map = {};
+  adCsvMappingPanel.querySelectorAll('.ad-csv-map').forEach(sel => { map[sel.dataset.field] = sel.value; });
+  return map;
+}
+
+async function submitAdCsvImport() {
+  if (!currentProfileId) return;
+  const map = currentAdCsvMapping();
+  if (!map.raw_content) return setStatus('⚠ 請先指定「文案內容欄位」。', true);
+
+  const hasPerfCols = map.spend || map.impressions || map.clicks || map.conversions;
+  const items = adCsvRows.map(r => ({
+    raw_content: r[map.raw_content] || '',
+    meta_ad_id: map.meta_ad_id ? r[map.meta_ad_id] : undefined,
+    performance: hasPerfCols ? {
+      spend: map.spend ? r[map.spend] : undefined,
+      impressions: map.impressions ? r[map.impressions] : undefined,
+      clicks: map.clicks ? r[map.clicks] : undefined,
+      conversions: map.conversions ? r[map.conversions] : undefined,
+      source: 'csv',
+    } : undefined,
+  })).filter(it => it.raw_content && it.raw_content.trim());
+
+  if (!items.length) return setStatus('⚠ 沒有可匯入的資料列（文案內容欄位可能是空的）。', true);
+
+  const btn = $('#ad-csv-import-confirm');
+  if (btn) btn.disabled = true;
+  setStatus(`正在匯入 ${items.length} 筆廣告文案…`);
+  try {
+    const CHUNK_SIZE = 200;
+    let created = 0, reused = 0, aiCalls = 0;
+    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+      const chunk = items.slice(i, i + CHUNK_SIZE);
+      const result = await api('/api/ad-copies/batch-import', {
+        method: 'POST',
+        body: JSON.stringify({ domain_profile_id: currentProfileId, items: chunk }),
+      });
+      created += result.created; reused += result.reused; aiCalls += result.ai_calls;
+    }
+    setStatus(`已匯入：${created} 筆新文案（呼叫 AI ${aiCalls} 次）、${reused} 筆已存在僅更新成效。`);
+    adCsvRows = []; adCsvHeaders = [];
+    adCsvMappingPanel.innerHTML = '';
+    if (adCsvFileInput) adCsvFileInput.value = '';
+    await loadAdCopies();
+  } catch (err) {
+    setStatus('⚠ ' + err.message, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── Meta Graph API 同步 ──────────────────────────────────────────────────
+const metaSyncForm = $('#meta-sync-form');
+if (metaSyncForm) {
+  metaSyncForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!currentProfileId) return;
+    const data = Object.fromEntries(new FormData(e.target));
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    setStatus('正在向 Meta Graph API 同步廣告洞察報告與素材，可能需要一些時間…');
+    try {
+      const result = await api('/api/ad-copies/meta-sync', {
+        method: 'POST',
+        body: JSON.stringify({ domain_profile_id: currentProfileId, ...data }),
+      });
+      setStatus(result.message || `同步完成，共處理 ${result.total} 則廣告。`);
+      e.target.querySelector('input[name="access_token"]').value = ''; // 用完即清，不殘留在畫面上
+      await loadAdCopies();
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { btn.disabled = false; }
+  });
+}
+
+// ── 效益驗證矩陣：痛點轉換矩陣 ＋ 高 CTR 結構模板 ──────────────────────────────
+function matrixRowHtml(title, subtitle, row) {
+  const pct = row.weighted_ctr != null ? Math.min(Math.round(row.weighted_ctr * 10000) / 100, 100) : 0;
+  return `<article class="report-row${row.low_confidence ? ' low-confidence' : ''}">
+    <div class="report-row-top">
+      <div><h4>${esc(title)}</h4>${subtitle ? `<p class="deep-desire">${esc(subtitle)}</p>` : ''}</div>
+      <span class="stamp ${row.low_confidence ? 'unreviewed' : 'confirmed'}">${row.low_confidence ? '樣本數過少' : `樣本 ${row.sample_size} 則`}</span>
+    </div>
+    <div class="confidence-bar"><div class="confidence-bar-fill" style="width:${pct}%"></div></div>
+    <div class="pain-meta">
+      <span>加權 CTR <span class="num">${pctLabel(row.weighted_ctr)}</span></span>
+      <span>加權 CPA <span class="num">${row.weighted_cpa ?? '—'}</span></span>
+      <span>加權 CVR <span class="num">${pctLabel(row.weighted_cvr)}</span></span>
+      ${row.weighted_roas != null ? `<span>加權 ROAS <span class="num">${row.weighted_roas}</span></span>` : ''}
+      <span>總花費 <span class="num">${row.total_spend ?? '—'}</span></span>
+    </div>
+  </article>`;
+}
+
+function renderMatrix(result) {
+  const container = $('#matrix-result');
+  if (!container) return;
+  const report = result.report || result;
+  if (!report.based_on_ad_copies) {
+    container.innerHTML = '<p class="muted">目前還沒有「已標籤化且已回灌成效數據」的廣告文案，請先匯入文案並附上花費／曝光／點擊等數據。</p>';
+    return;
+  }
+  const painRows = (report.pain_point_matrix || []).map(r => matrixRowHtml(r.pain_tag, null, r)).join('');
+  const structRows = (report.high_ctr_structure_templates || [])
+    .map(r => matrixRowHtml(`${r.hook_type || '未分類'} 開頭`, (r.structure_blocks || []).join(' → '), r)).join('');
+
+  container.innerHTML = `
+    ${report.note ? `<p class="muted" style="margin-bottom:14px">${esc(report.note)}</p>` : ''}
+    <p class="muted" style="margin-bottom:10px">依據 ${report.based_on_ad_copies} 則有成效數據的廣告文案（文案庫共 ${report.total_tagged_ad_copies} 則）計算，按加權 CTR 由高到低排序。</p>
+    <h3 style="margin:16px 0 8px">痛點轉換矩陣</h3>
+    <div class="r-breakdown">${painRows || '<p class="muted">尚無資料。</p>'}</div>
+    <h3 style="margin:20px 0 8px">高 CTR 結構模板</h3>
+    <div class="r-breakdown">${structRows || '<p class="muted">尚無資料。</p>'}</div>
+  `;
+}
+
+const buildMatrixBtn = $('#build-matrix-btn');
+if (buildMatrixBtn) {
+  buildMatrixBtn.onclick = async () => {
+    if (!currentProfileId) return;
+    buildMatrixBtn.disabled = true;
+    const original = buildMatrixBtn.textContent;
+    buildMatrixBtn.textContent = '計算中…';
+    try {
+      const result = await api(`/api/ad-copies/matrix?domain_profile_id=${currentProfileId}`, { method: 'POST' });
+      renderMatrix(result);
+      setStatus('已產出效益驗證矩陣。');
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { buildMatrixBtn.disabled = false; buildMatrixBtn.textContent = original; }
+  };
 }
 
 // ---------------- 初始化 ----------------
