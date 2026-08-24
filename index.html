@@ -10,6 +10,16 @@
 <span class="badge">痛點驗證工作台</span>
 </header>
 
+<!-- 身份確認：改為左上角的迷你角落元件，預設只顯示一行狀態文字，點擊才展開完整表單。
+     內部所有 id（auth-status／auth-form／auth-signin／auth-signup／auth-signout）都維持
+     原本的命名，交由既有的 auth.js 繼續控管登入/註冊邏輯本身，這裡只負責外觀與收合/展開，
+     不介入 auth.js 的行為，降低把登入功能改壞的風險。-->
+<div id="account-corner">
+<button type="button" id="account-corner-toggle" aria-haspopup="true">
+<span class="account-corner-dot" aria-hidden="true"></span>
+<span id="account-corner-label">尚未登入</span>
+</button>
+<div id="account-corner-panel" hidden>
 <section class="panel" id="auth-panel">
 <div class="step-heading"><b>ID</b><div><h2>身份確認</h2><p>工作台僅保存你自己的資料，需先登入。</p></div></div>
 <p id="auth-status">尚未登入，請先登入或註冊帳號才能使用。</p>
@@ -18,15 +28,20 @@
 <label>Email<input name="email" type="email" autocomplete="email" required></label>
 <label>密碼<input name="password" type="password" autocomplete="current-password" minlength="6" required></label>
 </div>
+<label>顯示名稱（選填）<input name="display_name" type="text" maxlength="30" placeholder="例如：小明（選填，註冊時可直接設定）"></label>
 <div class="auth-actions">
 <button id="auth-signin" type="submit">登入</button>
 <button id="auth-signup" type="button" class="secondary">註冊新帳號</button>
 <button id="auth-signout" type="button" class="secondary" hidden>登出</button>
+<button id="auth-update-name" type="button" class="ghost small" hidden>更新顯示名稱</button>
 </div>
 </form>
 </section>
+</div>
+</div>
 
 <section id="status" aria-live="polite"></section>
+
 
 <section id="composer-panel">
 
@@ -283,7 +298,9 @@
 <hr class="divider">
 <div class="report-detail-head">
 <h3>受眾痛點逐項分析</h3>
-<label class="sort-label">排序
+<div class="step-actions">
+<button type="button" class="ghost small r-toggle-breakdown">顯示逐項分析 →</button>
+<label class="sort-label r-sort-label" hidden>排序
 <select class="r-sort">
 <option value="confidence_desc">置信度：高到低</option>
 <option value="confidence_asc">置信度：低到高</option>
@@ -292,7 +309,8 @@
 </select>
 </label>
 </div>
-<div class="r-breakdown"></div>
+</div>
+<div class="r-breakdown" hidden></div>
 </div>
 </template>
 
