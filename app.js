@@ -192,6 +192,8 @@ function onProfileSelected(id) {
   $('#report-result').hidden = true;
   const suggestPreview = $('#suggest-preview');
   if (suggestPreview) suggestPreview.innerHTML = '';
+  const matchedTemplatesResult = $('#matched-templates-result');
+  if (matchedTemplatesResult) matchedTemplatesResult.innerHTML = '';
   resetSegmentsPanel();
   refreshProfileScope();
 }
@@ -726,6 +728,126 @@ if (swipeImportBtn) {
   };
 }
 
+// ── 高轉化文案 → 填空模板（共用）───────────────────────────────────────
+// 把 [佔位符] 標記出來，讓使用者一眼看出哪些地方要換成自己的產品資訊；raw text 先跳脫過
+// 再用正規表示式包標記，避免破壞 HTML escape。這個函式同時被「痛點比對」與「手法庫」兩處使用。
+function templateBlankify(text) {
+  return esc(text).replace(/\[[^\]]+\]/g, m => `<span class="blank">${m}</span>`);
+}
+
+// 把一份填空模板（{blocks, usage_note}）畫進指定的 container，並掛上「重新產生」按鈕。
+// id 是對應的 swipe_copies id，重新產生時要打同一支 API。
+function renderSwipeTemplate(id, container, template) {
+  const blocksHtml = (template.blocks || []).map(b => `
+    <div class="template-block">
+      <div class="tb-type">${esc(b.type)}</div>
+      <div class="tb-text">${templateBlankify(b.template)}</div>
+      ${b.fill_guide ? `<div class="tb-guide">${esc(b.fill_guide)}</div>` : ''}
+    </div>`).join('');
+  container.innerHTML = `
+    ${blocksHtml}
+    ${template.usage_note ? `<div class="template-usage-note">${esc(template.usage_note)}</div>` : ''}
+    <div class="pain-actions" style="margin-top:10px">
+      <button type="button" class="small ghost template-regen">重新產生模板（會覆蓋目前版本）</button>
+    </div>`;
+  container.dataset.loaded = 'true';
+  container.querySelector('.template-regen').onclick = async () => {
+    if (!confirm('確定要重新產生這篇文案的填空模板嗎？會覆蓋目前版本。')) return;
+    const regenBtn = container.querySelector('.template-regen');
+    regenBtn.disabled = true;
+    regenBtn.textContent = '產生中…';
+    try {
+      const fresh = await api(`/api/swipe-copies/${id}/template?regenerate=true`);
+      renderSwipeTemplate(id, container, fresh.template);
+    } catch (err) {
+      setStatus('⚠ ' + err.message, true);
+      regenBtn.disabled = false;
+      regenBtn.textContent = '重新產生模板（會覆蓋目前版本）';
+    }
+  };
+}
+
+// 通用的「取得或產生模板」按鈕行為：第一次點擊才打 API（若已快取，後端直接回傳，不會重打 AI），
+// 之後單純切換顯示/收合，不用每次都重新請求。
+async function toggleTemplateContainer(swipeId, container, btn, expandedLabel, collapsedLabel) {
+  if (container.dataset.loaded === 'true') {
+    container.hidden = !container.hidden;
+    btn.textContent = container.hidden ? collapsedLabel : expandedLabel;
+    return;
+  }
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = '產生中…';
+  try {
+    const result = await api(`/api/swipe-copies/${swipeId}/template`);
+    renderSwipeTemplate(swipeId, container, result.template);
+    container.hidden = false;
+    btn.textContent = expandedLabel;
+  } catch (err) {
+    setStatus('⚠ ' + err.message, true);
+    btn.textContent = original;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── 高轉化文案比對：痛點 × 手法庫 ──────────────────────────────────────
+// 對應「文案手法庫的高轉化模板自動帶入」：找出手法庫裡跟目前痛點清單高度重合的文案，
+// 讓使用者直接看到「哪篇文案打的是同一個痛點」，並可以一鍵產生填空模板來套用自己的產品特點。
+const matchedTemplatesBtn = $('#matched-templates-btn');
+if (matchedTemplatesBtn) {
+  matchedTemplatesBtn.onclick = async () => {
+    if (!currentProfileId) return;
+    matchedTemplatesBtn.disabled = true;
+    const original = matchedTemplatesBtn.textContent;
+    matchedTemplatesBtn.textContent = '比對中…';
+    const resultEl = $('#matched-templates-result');
+    if (resultEl) resultEl.innerHTML = '<p class="muted">正在比對目前的痛點與手法庫中的高轉化文案…</p>';
+    try {
+      const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/matched-templates`);
+      renderMatchedTemplates(result);
+    } catch (err) {
+      if (resultEl) resultEl.innerHTML = '';
+      setStatus('⚠ ' + err.message, true);
+    } finally {
+      matchedTemplatesBtn.disabled = false;
+      matchedTemplatesBtn.textContent = original;
+    }
+  };
+}
+
+function renderMatchedTemplates(result) {
+  const resultEl = $('#matched-templates-result');
+  if (!resultEl) return;
+  const matches = result.matches || [];
+  if (!matches.length) {
+    resultEl.innerHTML = `<p class="muted">${esc(result.message || '尚未找到高度重合的文案，可以多分析幾篇同領域的範例文案再試一次。')}</p>`;
+    return;
+  }
+  resultEl.innerHTML = matches.map((m, i) => `
+    <div class="match-card" data-idx="${i}">
+      <div class="match-top">
+        <div>
+          <p style="font-weight:600">${esc(m.surface_problem)}</p>
+          <p class="muted" style="margin-top:2px">手法庫命中：「${esc(m.matched_surface_problem)}」（${esc(m.industry_tag || '未分類')} · ${esc(m.framework_tag || '未分類')}）</p>
+        </div>
+        <span class="match-score">相似度 ${m.similarity_score}</span>
+      </div>
+      ${m.matched_quote ? `<div class="pain-quote" style="margin-top:8px">「${esc(m.matched_quote)}」</div>` : ''}
+      <div class="pain-actions" style="margin-top:10px">
+        <button type="button" class="small secondary match-template-btn">產生／查看填空模板</button>
+      </div>
+      <div class="template-container" data-loaded="false" hidden></div>
+    </div>`).join('') + `<p class="muted" style="margin-top:10px">共比對 ${result.based_on_count} 筆痛點（已駁回者不計入）。</p>`;
+
+  resultEl.querySelectorAll('.match-card').forEach((card, i) => {
+    const swipeId = matches[i].swipe_copy_id;
+    const btn = card.querySelector('.match-template-btn');
+    const container = card.querySelector('.template-container');
+    btn.onclick = () => toggleTemplateContainer(swipeId, container, btn, '收合模板', '產生／查看填空模板');
+  });
+}
+
 $('#manual-pain-form').addEventListener('submit', async e => {
   e.preventDefault();
   const data = Object.fromEntries(new FormData(e.target));
@@ -1019,17 +1141,84 @@ function swipeCardHtml(x) {
     ${insightHtml}
     <div class="pain-actions">
       <button data-id="${esc(x.id)}" class="small ghost reanalyze">重新分析</button>
+      <button data-id="${esc(x.id)}" class="small ghost template-btn">填空模板</button>
       <button data-id="${esc(x.id)}" class="small danger ghost delete">刪除</button>
     </div>
+    <div class="template-container" data-id="${esc(x.id)}" data-loaded="false" hidden></div>
   </article>`;
+}
+
+// ---- 篩選（資料庫瀏覽模式）----
+// 下拉選單的候選值來自後端 /api/swipe-copies/facets（實際存在資料庫中的值），
+// 篩選條件本身則直接帶進 /api/swipe-copies 的查詢字串，交給後端用 PostgREST 過濾，
+// 而不是先整包抓回來再用 JS 篩——手法庫量一大時效能會差很多，也才符合「像資料庫一樣查詢」的體感。
+const swipeFilterQ = $('#swipe-filter-q');
+const swipeFilterIndustry = $('#swipe-filter-industry');
+const swipeFilterFramework = $('#swipe-filter-framework');
+const swipeFilterAngle = $('#swipe-filter-angle');
+const swipeFilterHasPain = $('#swipe-filter-has-pain');
+const swipeFilterReset = $('#swipe-filter-reset');
+const swipeFilterCount = $('#swipe-filter-count');
+
+function fillFilterSelect(select, values) {
+  if (!select) return;
+  const current = select.value;
+  const defaultLabel = select.dataset.defaultLabel || select.firstElementChild.textContent;
+  select.dataset.defaultLabel = defaultLabel;
+  select.innerHTML = `<option value="">${esc(defaultLabel)}</option>` +
+    (values || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  if (values && values.includes(current)) select.value = current;
+}
+
+async function loadSwipeFacets() {
+  try {
+    const facets = await api('/api/swipe-copies/facets');
+    fillFilterSelect(swipeFilterIndustry, facets.industry_tag);
+    fillFilterSelect(swipeFilterFramework, facets.framework_tag);
+    fillFilterSelect(swipeFilterAngle, facets.angle_type);
+  } catch (e) { /* 篩選選單載入失敗不影響主要清單顯示 */ }
+}
+
+function swipeFilterQueryString() {
+  const params = new URLSearchParams();
+  if (swipeFilterQ && swipeFilterQ.value.trim()) params.set('q', swipeFilterQ.value.trim());
+  if (swipeFilterIndustry && swipeFilterIndustry.value) params.set('industry_tag', swipeFilterIndustry.value);
+  if (swipeFilterFramework && swipeFilterFramework.value) params.set('framework_tag', swipeFilterFramework.value);
+  if (swipeFilterAngle && swipeFilterAngle.value) params.set('angle_type', swipeFilterAngle.value);
+  if (swipeFilterHasPain && swipeFilterHasPain.checked) params.set('has_pain_points', 'true');
+  return params.toString();
+}
+
+[swipeFilterIndustry, swipeFilterFramework, swipeFilterAngle, swipeFilterHasPain].forEach(el => {
+  if (el) el.addEventListener('change', () => loadSwipes());
+});
+let swipeFilterQTimer;
+if (swipeFilterQ) {
+  swipeFilterQ.addEventListener('input', () => {
+    clearTimeout(swipeFilterQTimer);
+    swipeFilterQTimer = setTimeout(() => loadSwipes(), 400);
+  });
+}
+if (swipeFilterReset) {
+  swipeFilterReset.onclick = () => {
+    if (swipeFilterQ) swipeFilterQ.value = '';
+    if (swipeFilterIndustry) swipeFilterIndustry.value = '';
+    if (swipeFilterFramework) swipeFilterFramework.value = '';
+    if (swipeFilterAngle) swipeFilterAngle.value = '';
+    if (swipeFilterHasPain) swipeFilterHasPain.checked = false;
+    loadSwipes();
+  };
 }
 
 async function loadSwipes() {
   try {
-    const items = await api('/api/swipe-copies');
-    swipeList.innerHTML = items.length ? items.map(swipeCardHtml).join('') : '<p class="muted">尚無已儲存的範例文案。</p>';
+    const qs = swipeFilterQueryString();
+    const items = await api('/api/swipe-copies' + (qs ? '?' + qs : ''));
+    swipeList.innerHTML = items.length ? items.map(swipeCardHtml).join('') : '<p class="muted">沒有符合篩選條件的範例文案。</p>';
+    if (swipeFilterCount) swipeFilterCount.textContent = qs ? `符合篩選條件：${items.length} 篇` : `共 ${items.length} 篇`;
+
     swipeList.querySelectorAll('.delete').forEach(b => b.onclick = async () => {
-      if (confirm('確定刪除這篇範例？')) { await api('/api/swipe-copies/' + b.dataset.id, { method: 'DELETE' }); loadSwipes(); }
+      if (confirm('確定刪除這篇範例？')) { await api('/api/swipe-copies/' + b.dataset.id, { method: 'DELETE' }); loadSwipes(); loadSwipeFacets(); }
     });
     // 重新分析：用最新的分析邏輯（優先萃取受眾痛點／為什麼鎖定／身份認同，不再因為文案沒把
     // 問題講白就回傳空陣列）重跑舊資料，不用使用者自己刪除重貼一次。
@@ -1046,7 +1235,115 @@ async function loadSwipes() {
         b.textContent = original;
       }
     });
+    // 填空模板：見檔案上方共用的 toggleTemplateContainer／renderSwipeTemplate。
+    swipeList.querySelectorAll('.template-btn').forEach(b => {
+      const container = swipeList.querySelector(`.template-container[data-id="${b.dataset.id}"]`);
+      if (container) b.onclick = () => toggleTemplateContainer(b.dataset.id, container, b, '收合模板', '填空模板');
+    });
+    // 已經產生過模板的（fill_in_template 有快取值）直接把內容準備好，第一次點擊不用再打一次 API，
+    // 但畫面仍保持收合，避免每篇文案都自動展開造成畫面過長。
+    items.forEach(x => {
+      if (!x.fill_in_template) return;
+      const container = swipeList.querySelector(`.template-container[data-id="${x.id}"]`);
+      if (container) renderSwipeTemplate(x.id, container, x.fill_in_template);
+    });
   } catch (e) { swipeList.textContent = '無法載入資料庫。'; }
+}
+
+// ---------------- 洞察報告資料庫（跨產品/服務設定瀏覽） ----------------
+// 篩選選項（領域／受眾／價格帶）直接沿用已經載入的 profilesCache，不用另外打 API 拿 distinct 值，
+// 因為報告一定歸屬在某個產品/服務設定底下，設定本身的清單前端本來就有。
+
+let reportLibraryCache = [];
+
+function reportLibraryFilterOptions() {
+  const domainSelect = $('#report-filter-domain');
+  const audienceSelect = $('#report-filter-audience');
+  const tierSelect = $('#report-filter-tier');
+  if (!domainSelect || !audienceSelect || !tierSelect) return;
+  const domains = [...new Set(profilesCache.map(p => p.domain_tag).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+  const audiences = [...new Set(profilesCache.map(p => p.audience).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+  fillFilterSelect(domainSelect, domains);
+  fillFilterSelect(audienceSelect, audiences);
+  if (!tierSelect.dataset.built) {
+    tierSelect.innerHTML = tierSelect.innerHTML + `<option value="low">低單價／快速決策</option><option value="high">高客單／建立信任</option>`;
+    tierSelect.dataset.built = 'true';
+  }
+}
+
+function reportLibraryCardHtml(r) {
+  const profile = profilesCache.find(p => p.id === r.domain_profile_id);
+  const label = profile ? profileLabel(profile) : '（設定已刪除）';
+  const c = r.coverage || {};
+  const created = new Date(r.created_at).toLocaleString('zh-TW', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return `<div class="report-library-card" data-id="${esc(r.id)}">
+    <div class="rlc-meta">
+      <div class="rlc-label">${esc(label)}</div>
+      <div class="rlc-sub">${created}｜痛點 ${c.total_pain_points ?? '—'} 筆，已確認 ${c.confirmed ?? '—'} 筆${profile ? '｜' + esc(profile.price_tier === 'low' ? '低單價／快速決策' : '高客單／建立信任') : ''}</div>
+    </div>
+    <button type="button" class="small secondary rlc-view">查看報告</button>
+  </div>`;
+}
+
+async function loadReportLibrary() {
+  const listEl = $('#report-library-list');
+  if (!listEl) return;
+  try {
+    reportLibraryCache = await api('/api/insight-reports');
+    reportLibraryFilterOptions();
+    renderReportLibrary();
+  } catch (e) { listEl.innerHTML = '<p class="muted">無法載入報告資料庫。</p>'; }
+}
+
+function renderReportLibrary() {
+  const listEl = $('#report-library-list');
+  if (!listEl) return;
+  const domainFilter = $('#report-filter-domain') ? $('#report-filter-domain').value : '';
+  const audienceFilter = $('#report-filter-audience') ? $('#report-filter-audience').value : '';
+  const tierFilter = $('#report-filter-tier') ? $('#report-filter-tier').value : '';
+
+  const filtered = reportLibraryCache.filter(r => {
+    const profile = profilesCache.find(p => p.id === r.domain_profile_id);
+    if (domainFilter && (!profile || profile.domain_tag !== domainFilter)) return false;
+    if (audienceFilter && (!profile || profile.audience !== audienceFilter)) return false;
+    if (tierFilter && (!profile || profile.price_tier !== tierFilter)) return false;
+    return true;
+  });
+
+  listEl.innerHTML = filtered.length
+    ? filtered.map(reportLibraryCardHtml).join('')
+    : '<p class="muted">沒有符合篩選條件的報告。</p>';
+
+  listEl.querySelectorAll('.rlc-view').forEach(btn => {
+    const card = btn.closest('.report-library-card');
+    btn.onclick = async () => {
+      try {
+        const result = await api(`/api/insight-reports/${card.dataset.id}`);
+        renderReport(result.report, '報告資料庫');
+        $('#report-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    };
+  });
+}
+
+['report-filter-domain', 'report-filter-audience', 'report-filter-tier'].forEach(id => {
+  const el = $('#' + id);
+  if (el) el.addEventListener('change', renderReportLibrary);
+});
+const reportFilterReset = $('#report-filter-reset');
+if (reportFilterReset) {
+  reportFilterReset.onclick = () => {
+    ['report-filter-domain', 'report-filter-audience', 'report-filter-tier'].forEach(id => { const el = $('#' + id); if (el) el.value = ''; });
+    renderReportLibrary();
+  };
+}
+const reportLibraryPanel = $('#report-library-panel');
+if (reportLibraryPanel) {
+  // 用 details 的 toggle 事件延遲載入，使用者沒展開這個區塊就不用預先打 API。
+  let reportLibraryLoaded = false;
+  reportLibraryPanel.addEventListener('toggle', () => {
+    if (reportLibraryPanel.open && !reportLibraryLoaded) { reportLibraryLoaded = true; loadReportLibrary(); }
+  });
 }
 
 // ---------------- 初始化 ----------------
