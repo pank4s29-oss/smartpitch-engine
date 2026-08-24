@@ -193,12 +193,22 @@ async function handleList(req, res, user) {
   }
 }
 
+async function handleDelete(req, res, user, id) {
+  try {
+    await restRequest(`insight_reports?id=eq.${id}&user_id=eq.${user.id}`, { method: 'DELETE' });
+    return res.status(200).json({ deleted: true });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
 
   const { id } = req.query || {};
   if (id) {
+    if (req.method === 'DELETE') return handleDelete(req, res, user, id);
     if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
     return handleGet(req, res, user, id);
   }
