@@ -457,3 +457,59 @@ details.panel[open] summary { margin-bottom: 16px; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ============================================================================
+ * Meta 廣告效益驗證模組 — 新增樣式
+ * 附加到既有 style.css 檔案末尾即可。全部沿用既有的 class 命名慣例
+ * （pain-card / report-row / confidence-bar / label-chip / stamp / muted…），
+ * 這裡只補新增的少數幾個 class，不重複定義既有樣式，避免覆蓋衝突。
+ * ============================================================================ */
+
+/* 樣本數過少的矩陣列：降低視覺權重，避免使用者誤把低樣本數的結果當成可靠結論 */
+.report-row.low-confidence {
+  opacity: 0.62;
+}
+.report-row.low-confidence .confidence-bar-fill {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--muted, #9aa0a6),
+    var(--muted, #9aa0a6) 6px,
+    transparent 6px,
+    transparent 12px
+  );
+}
+
+/* 進階（AI 猜測）工具區塊：用比較內斂的樣式，呼應「這不是主流程」的定位 */
+details.advanced-tools {
+  margin: 14px 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--border, #d8dbe0);
+  border-radius: 8px;
+  background: var(--panel-alt, #fafafa);
+}
+details.advanced-tools > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--muted-strong, #555);
+}
+
+/* Meta 帳號同步區塊：與既有的 .csv-import <details> 視覺一致，這裡只加一個識別 class
+ * 供未來若要客製化區隔（例如加上 Meta 品牌色的左邊框）時使用 */
+details.meta-sync {
+  margin-top: 14px;
+}
+details.meta-sync > summary {
+  cursor: pointer;
+}
+
+/* 廣告文案卡片內的成效／標籤列，沿用 .pain-meta 的排版但允許換行更密集 */
+#ad-copy-list .pain-meta span {
+  white-space: nowrap;
+}
+
+/* 廣告文案卡片標題（文案內容預覽）避免過長無法換行 */
+#ad-copy-panel .pain-card h3,
+#ad-copies-panel .pain-card h3 {
+  word-break: break-word;
+}
