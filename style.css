@@ -513,3 +513,88 @@ details.meta-sync > summary {
 #ad-copies-panel .pain-card h3 {
   word-break: break-word;
 }
+
+/* ============================================================================
+ * 帳號角落元件（身份確認收合）
+ * ============================================================================ */
+#account-corner {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 60;
+}
+#account-corner-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d8dbe0);
+  background: var(--bg, #fff);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  font-size: 13px;
+  cursor: pointer;
+  max-width: 220px;
+}
+#account-corner-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-corner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted, #9aa0a6);
+  flex: none;
+}
+#account-corner-panel {
+  margin-top: 8px;
+  width: min(360px, calc(100vw - 28px));
+}
+#account-corner-panel #auth-panel {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+#auth-form input[name="display_name"] {
+  min-width: 0;
+}
+
+/* ============================================================================
+ * 就近顯示的通知（inline-notice）
+ * ============================================================================ */
+.inline-notice {
+  position: fixed;
+  z-index: 999;
+  max-width: 280px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: #2f7a3d;
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  animation: inline-notice-in 0.15s ease-out;
+  pointer-events: none;
+}
+.inline-notice.error {
+  background: #b3261e;
+}
+@keyframes inline-notice-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ============================================================================
+ * 洞察報告資料庫：卡片內的操作列（查看／刪除並排）
+ * ============================================================================ */
+.report-library-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rlc-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
