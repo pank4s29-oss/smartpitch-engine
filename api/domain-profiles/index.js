@@ -88,13 +88,16 @@ module.exports = async (req, res) => {
   if (req.method === 'PATCH') {
     if (!id) return sendError(res, 400, '缺少 id。');
     const {
-      domain_tag, audience, price_tier,
+      domain_tag, audience, price_tier, constraints,
       product_name, core_selling_point, solution_description, trust_proof,
     } = req.body || {};
     const patch = {};
     if (domain_tag !== undefined) patch.domain_tag = domain_tag;
     if (audience !== undefined) patch.audience = audience;
     if (price_tier !== undefined) patch.price_tier = price_tier;
+    // business_constraints（呈現媒介限制，如「不露臉」「不使用短影音」）先前只有在建立時會寫入，
+    // 編輯既有設定時漏掉了這個欄位，導致使用者事後修改限制條件永遠不會生效。
+    if (constraints !== undefined) patch.business_constraints = constraints || [];
     if (product_name !== undefined) patch.product_name = product_name;
     if (core_selling_point !== undefined) patch.core_selling_point = core_selling_point;
     if (solution_description !== undefined) patch.solution_description = solution_description;
