@@ -17,6 +17,20 @@ function round2(n) {
   return n === null || n === undefined ? null : Math.round(n * 100) / 100;
 }
 
+const CONSTRAINT_LABELS = {
+  no_face: '不露臉',
+  no_short_video: '不使用短影音',
+  text_only: '純文字與圖文排版',
+};
+
+// 呈現媒介限制目前只在建立設定時寫入資料庫，過去沒有任何地方讀取、對報告內容毫無影響——
+// 這裡把它接進報告，讓「有限制」這件事變成報告會實際考量的變數，而不是存了但沒人用的欄位。
+function constraintsLabel(profile) {
+  return Array.isArray(profile.business_constraints) && profile.business_constraints.length
+    ? profile.business_constraints.map(c => CONSTRAINT_LABELS[c] || c).join('、')
+    : null;
+}
+
 async function buildReport(profile, painPoints) {
   // 解決方案改為在「產品／服務設定」填寫一次，套用到底下所有痛點——
   // 只要產品名稱與解決方案說明都有填，就視為每一筆痛點都已配對到解決方案。
@@ -77,7 +91,12 @@ async function buildReport(profile, painPoints) {
     : { name: 'AIDA', reason: '高客單／建立信任，初步建議採用 AIDA 強化信任累積與長期價值。' };
 
   return {
-    domain_profile: { domain_tag: profile.domain_tag, audience: profile.audience, price_tier: profile.price_tier },
+    domain_profile: {
+      domain_tag: profile.domain_tag,
+      audience: profile.audience,
+      price_tier: profile.price_tier,
+      business_constraints: constraintsLabel(profile),
+    },
     coverage: {
       total_pain_points: total,
       with_evidence: withEvidence,
@@ -97,13 +116,18 @@ async function generateNarrative(profile, report) {
     .sort((a, b) => (b.confidence_score || 0) - (a.confidence_score || 0))
     .slice(0, 3);
 
-  const system = '你是受眾策略顧問。只能輸出一段不含標題、不含條列符號的繁體中文導讀文字，總長度不超過 200 字，語氣專業精簡。';
+  const constraints = constraintsLabel(profile);
+  const system = `你是受眾策略顧問。只能輸出一段不含標題、不含條列符號的繁體中文導讀文字，總長度不超過 200 字，語氣專業精簡。
+用詞規則：避免使用「知識變現」「商業底層邏輯」「賦能」「價值主張」之類的行銷黑話或包裝過的策略術語，
+改用一般人看得懂的白話描述，讓沒有行銷背景的使用者也能直接理解並採取行動。`;
   const prompt = `領域：${profile.domain_tag}／受眾：${profile.audience}
 痛點總數：${report.coverage.total_pain_points}，有語料佐證：${report.coverage.with_evidence}，已人工確認：${report.coverage.confirmed}，平均置信度：${report.coverage.avg_confidence_score ?? '無資料'}
 最具佐證力的痛點：${top.map(p => `「${p.surface_problem}」（置信度 ${p.confidence_score ?? '無'}）`).join('、') || '（尚無資料）'}
 風險提示：${report.risk_flags.join('；') || '無'}
+呈現媒介限制：${constraints || '無特別限制'}
 
-請寫一段導讀，說明目前受眾洞察的驗證程度、哪個痛點最值得優先投入，以及建議的下一步。`;
+請寫一段導讀，說明目前受眾洞察的驗證程度、哪個痛點最值得優先投入，以及建議的下一步。若設有呈現媒介限制，
+下一步建議需要能在該限制下執行。`;
 
   const raw = await call({ system, prompt, maxTokens: NARRATIVE_MAX_TOKENS, budgetMs: NARRATIVE_BUDGET_MS });
   return raw.trim();
