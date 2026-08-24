@@ -1,11 +1,11 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>受眾策略引擎｜痛點驗證工作台</title><link rel="stylesheet" href="/style.css"></head><body>
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>受眾策略引擎｜痛點驗證與 Meta 廣告效益驗證工作台</title><link rel="stylesheet" href="/style.css"></head><body>
 <main>
 
 <header>
 <div>
-<p class="eyebrow">AUDIENCE STRATEGY ENGINE</p>
-<h1>先驗證受眾洞察，再決定怎麼說。</h1>
-<p class="subtitle">匯入真實顧客語料、萃取並驗證痛點、產出附帶置信度與證據的策略報告——每個數字都算得出來源，不是模型憑常識猜的。</p>
+<p class="eyebrow">AUDIENCE STRATEGY & META AD VALIDATION ENGINE</p>
+<h1>先驗證受眾洞察，再用真實花費數據驗證。</h1>
+<p class="subtitle">匯入真實顧客語料、萃取並驗證痛點；廣告上線後回灌 Meta 成效數據，用真實 CTR／CPA／CVR／ROAS 交叉驗證哪個痛點真的有效——每個數字都算得出來源，不是模型憑常識猜的。</p>
 </div>
 <span class="badge">痛點驗證工作台</span>
 </header>
@@ -89,9 +89,17 @@
 </section>
 
 <section class="panel">
-<div class="step-heading"><b>03</b><div><h2>痛點清單</h2><p>每筆痛點的置信度來自「有多少語料佐證」，不是 AI 自己打的分數。</p><div class="step-actions"><button type="button" id="swipe-import-btn" class="ghost small">從文案手法庫帶入</button><button type="button" id="matched-templates-btn" class="ghost small">比對高轉化模板 →</button><button type="button" id="suggest-btn" class="ghost small">AI 建議草稿</button></div></div></div>
-<div id="suggest-preview"></div>
+<div class="step-heading"><b>03</b><div><h2>痛點清單</h2><p>每筆痛點的置信度來自「有多少語料佐證」，不是 AI 自己打的分數。</p><div class="step-actions"><button type="button" id="matched-templates-btn" class="ghost small">比對高轉化模板 →</button></div></div></div>
 <div id="matched-templates-result"></div>
+<details class="advanced-tools">
+<summary>進階：AI 輔助草稿工具</summary>
+<p class="muted" style="margin:10px 0 12px">以下兩項是模型憑領域與受眾發想的草稿，沒有真實語料或廣告成效佐證，僅供發想參考。若已累積 Meta 廣告成效數據，建議優先參考下方「Meta 廣告效益驗證」區塊的痛點轉換矩陣，那是用真實 CTR／CPA 驗證過的結果。</p>
+<div class="step-actions">
+<button type="button" id="swipe-import-btn" class="ghost small">從文案手法庫帶入</button>
+<button type="button" id="suggest-btn" class="ghost small">AI 建議草稿</button>
+</div>
+<div id="suggest-preview"></div>
+</details>
 <form id="manual-pain-form">
 <div class="grid">
 <label>表層問題<input name="surface_problem" placeholder="例：下班太累，運動難以持續" required></label>
@@ -116,6 +124,62 @@
 </section>
 
 <section id="report-result" hidden></section>
+
+<section class="panel" id="ad-copies-panel">
+<div class="step-heading"><b>06</b><div><h2>Meta 廣告效益驗證</h2><p>廣告上線後，把真實花費數據回灌進來——同一份文案不管回灌幾次都只標籤化一次，用真實 CTR／CPA／CVR／ROAS 交叉驗證哪個痛點真的打得動人，而不是靠 AI 猜置信度。</p></div></div>
+
+<form id="ad-copy-form">
+<label>廣告文案內容<textarea name="raw_content" required placeholder="貼上一則已投放的 Meta 廣告文案…"></textarea></label>
+<div class="grid">
+<label>投放版位（選填）<select name="platform"><option value="facebook">Facebook</option><option value="instagram">Instagram</option><option value="audience_network">Audience Network</option><option value="messenger">Messenger</option></select></label>
+<label>花費（選填）<input name="spend" type="number" step="0.01" placeholder="例：500"></label>
+</div>
+<div class="grid">
+<label>曝光數（選填）<input name="impressions" type="number" placeholder="例：10000"></label>
+<label>點擊數（選填）<input name="clicks" type="number" placeholder="例：300"></label>
+<label>轉換數（選填）<input name="conversions" type="number" placeholder="例：12"></label>
+</div>
+<button type="submit">加入文案庫並回灌成效</button>
+</form>
+
+<hr class="divider">
+<details class="csv-import">
+<summary><strong>或上傳 CSV 檔案批次匯入廣告文案與成效</strong><span class="muted">適合 Meta Ads Manager 匯出的報表</span></summary>
+<p class="muted" style="margin:10px 0 12px">請指定哪一欄是文案內容，花費／曝光／點擊／轉換為選填——同一份文案的 hash 若已存在，會直接更新成效，不會重複呼叫 AI。</p>
+<input type="file" id="ad-csv-file-input" accept=".csv,text/csv">
+<div id="ad-csv-mapping-panel"></div>
+</details>
+
+<hr class="divider">
+<details class="meta-sync">
+<summary><strong>連接 Meta 廣告帳號自動同步</strong><span class="muted">直接從 Meta Graph API 拉取洞察報告與文案素材</span></summary>
+<p class="muted" style="margin:10px 0 12px">Access Token 僅用於這次同步請求，系統不會儲存。需要有該廣告帳號的讀取權限。</p>
+<form id="meta-sync-form">
+<div class="grid">
+<label>廣告帳號 ID（不含 act_）<input name="ad_account_id" placeholder="例：123456789012345" required></label>
+<label>Access Token<input name="access_token" type="password" placeholder="貼上長期或短期存取權杖" required></label>
+</div>
+<label>同步期間<select name="date_preset">
+<option value="last_7d">近 7 天</option>
+<option value="last_30d" selected>近 30 天</option>
+<option value="last_90d">近 90 天</option>
+<option value="maximum">全部歷史</option>
+</select></label>
+<button type="submit" class="secondary">開始同步</button>
+</form>
+</details>
+
+<hr class="divider">
+<div class="filter-bar" style="margin-bottom:10px">
+<span class="muted" id="ad-copy-count"></span>
+</div>
+<div id="ad-copy-list"><p class="muted">尚無已匯入的廣告文案。</p></div>
+
+<hr class="divider">
+<div class="step-heading"><b>&#9679;</b><div><h3 style="margin:0">效益驗證矩陣</h3><p>依真實成效交叉計算「痛點轉換矩陣」與「高 CTR 結構模板」，純運算不呼叫 AI。</p></div></div>
+<button type="button" id="build-matrix-btn" class="secondary">產出效益驗證矩陣 →</button>
+<div id="matrix-result"></div>
+</section>
 
 </div>
 </section>
