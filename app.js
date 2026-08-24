@@ -72,6 +72,8 @@ function setProfileFormMode(mode, profile) {
     form.core_selling_point.value = profile.core_selling_point || '';
     form.solution_description.value = profile.solution_description || '';
     form.trust_proof.value = profile.trust_proof || '';
+    const activeConstraints = new Set(Array.isArray(profile.business_constraints) ? profile.business_constraints : []);
+    $$('#profile-form input[name="constraints"]').forEach(cb => { cb.checked = activeConstraints.has(cb.value); });
     submitBtn.textContent = '更新產品／服務設定';
   } else {
     form.reset();
@@ -143,7 +145,11 @@ if (clearAllBtn) {
 
 $('#profile-form').addEventListener('submit', async e => {
   e.preventDefault();
-  const data = Object.fromEntries(new FormData(e.target));
+  const formData = new FormData(e.target);
+  const data = Object.fromEntries(formData);
+  // 呈現媒介限制是多選 checkbox，Object.fromEntries 對同名欄位只會保留最後一個值，
+  // 要另外用 getAll 取出完整陣列，否則勾選多個限制送出後只會剩一個。
+  data.constraints = formData.getAll('constraints');
   try {
     if (editingProfileId) {
       const updated = await api(`/api/domain-profiles?id=${editingProfileId}`, { method: 'PATCH', body: JSON.stringify(data) });
@@ -785,6 +791,11 @@ function renderSegments(result) {
       </div>
       ${seg.rationale ? `<div class="pain-quote">${esc(seg.rationale)}</div>` : ''}
       ${seg.differentiation ? `<div class="segment-differentiation"><b>與目標受眾的差異：</b>${esc(seg.differentiation)}</div>` : ''}
+      ${Array.isArray(seg.suggested_formats) && seg.suggested_formats.length ? `
+      <div class="pain-meta" style="margin-top:12px">適合賣給這個族群的數位資產形式：</div>
+      <div class="framework-box" style="margin-top:8px">${seg.suggested_formats.map(f =>
+        `<div style="margin-bottom:6px"><b>${esc(f.format)}</b>${f.reason ? ' — ' + esc(f.reason) : ''}</div>`
+      ).join('')}</div>` : ''}
       <div class="pain-meta" style="margin-top:12px">這個族群特別在意的痛點：</div>
       <div class="label-chips" style="margin-top:8px">${chips || '<span class="muted">（無對應痛點）</span>'}</div>
     `;
@@ -803,7 +814,7 @@ if (segmentsBtn) {
       renderSegments(result);
       setStatus(
         result.segments && result.segments.length
-          ? `分析出 ${result.segments.length} 個潛在受眾族群（依據 ${result.based_on_count} 筆痛點）。`
+          ? `分析出 ${result.segments.length} 個潛在受眾族群（依據 ${result.based_on_count} 筆痛點）${result.constraints_applied ? '，已套用呈現媒介限制：' + result.constraints_applied : ''}。`
           : (result.message || '尚未反推出有區別度的受眾族群。')
       );
     } catch (err) { setStatus('⚠ ' + err.message, true); }
@@ -881,7 +892,8 @@ function renderReport(report, meta) {
   container.innerHTML = '';
   const node = $('#report-tpl').content.cloneNode(true);
 
-  node.querySelector('.r-meta').textContent = meta || '剛剛產出';
+  const dp = report.domain_profile || {};
+  node.querySelector('.r-meta').textContent = (meta || '剛剛產出') + (dp.business_constraints ? `｜呈現媒介限制：${dp.business_constraints}` : '');
 
   const narrativeEl = node.querySelector('.r-narrative');
   if (report.narrative) {
