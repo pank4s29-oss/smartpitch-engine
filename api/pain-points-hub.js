@@ -512,6 +512,81 @@ async function handleFromSwipe(req, res, user, profileId) {
   }
 }
 
+// ── 高轉化文案比對：痛點 × 文案手法庫 ──────────────────────────────────
+// 呼應「文案手法庫的高轉化模板自動帶入」：不是隨便從手法庫裡挑一篇，而是拿目前這組設定
+// 「已通過複核／未駁回」的痛點，逐一跟手法庫裡每篇已萃取出受眾痛點的範例文案比對相似度，
+// 相似度夠高才視為「這篇文案打的就是同一個痛點」，回傳配對結果（不含模板內容本身——
+// 模板由 /api/swipe-copies/:id?action=template 產生並快取，這裡只負責「配對」這一步，
+// 避免每次比對都連帶重新產生一次模板、浪費 AI 呼叫額度）。
+// 相似度門檻沿用檔案開頭 findExistingMatch 用的同一組 bigram 相似度邏輯，但要求更高
+// （見 MATCH_* 門檻），因為這裡要找的是「高度重合」，不是「應合併為同一筆」的寬鬆判斷。
+const MATCH_SURFACE_THRESHOLD = 0.5;
+const MATCH_DESIRE_THRESHOLD = 0.4;
+const MATCHED_TEMPLATES_MAX_PAIN_POINTS = 8;
+
+async function handleMatchedTemplates(req, res, user, profileId) {
+  if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
+  try {
+    const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=domain_tag`);
+    if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
+
+    const points = await restRequest(
+      `audience_pain_points?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&review_status=neq.rejected&select=id,surface_problem,deep_desire,confidence_score&order=confidence_score.desc.nullslast&limit=${MATCHED_TEMPLATES_MAX_PAIN_POINTS}`
+    );
+    if (!points.length) {
+      return res.status(200).json({ matches: [], message: '尚無可比對的痛點（已駁回的痛點不計入），請先建立或萃取痛點。' });
+    }
+
+    const swipes = await restRequest(
+      `swipe_copies?user_id=eq.${user.id}&select=id,industry_tag,framework_tag,extracted_pain_points&extracted_pain_points=not.is.null`
+    );
+    if (!swipes.length) {
+      return res.status(200).json({ matches: [], message: '文案手法庫中尚無已萃取出受眾痛點的範例文案，請先到手法庫分析幾篇文案。' });
+    }
+
+    const matches = [];
+    points.forEach(point => {
+      let best = null;
+      swipes.forEach(swipe => {
+        (Array.isArray(swipe.extracted_pain_points) ? swipe.extracted_pain_points : []).forEach(sp => {
+          if (!sp.surface_problem || !sp.deep_desire) return;
+          const surfaceSim = bigramSimilarity(point.surface_problem, sp.surface_problem);
+          const desireSim = bigramSimilarity(point.deep_desire, sp.deep_desire);
+          if (surfaceSim < MATCH_SURFACE_THRESHOLD || desireSim < MATCH_DESIRE_THRESHOLD) return;
+          const score = surfaceSim + desireSim;
+          if (!best || score > best.score) {
+            best = {
+              score, swipe_copy_id: swipe.id, industry_tag: swipe.industry_tag, framework_tag: swipe.framework_tag,
+              matched_surface_problem: sp.surface_problem, matched_quote: sp.quote || null,
+            };
+          }
+        });
+      });
+      if (best) {
+        matches.push({
+          pain_point_id: point.id,
+          surface_problem: point.surface_problem,
+          deep_desire: point.deep_desire,
+          swipe_copy_id: best.swipe_copy_id,
+          industry_tag: best.industry_tag,
+          framework_tag: best.framework_tag,
+          matched_surface_problem: best.matched_surface_problem,
+          matched_quote: best.matched_quote,
+          similarity_score: Math.round(best.score * 100) / 100,
+        });
+      }
+    });
+
+    return res.status(200).json({
+      matches,
+      based_on_count: points.length,
+      message: matches.length ? undefined : '目前的痛點跟手法庫裡的文案都沒有高度重合，可以多分析幾篇同領域的範例文案再試一次。',
+    });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
@@ -523,6 +598,7 @@ module.exports = async (req, res) => {
   if (action === 'extract') return handleExtract(req, res, user, profileId);
   if (action === 'segments') return handleSegments(req, res, user, profileId);
   if (action === 'from-swipe') return handleFromSwipe(req, res, user, profileId);
+  if (action === 'matched-templates') return handleMatchedTemplates(req, res, user, profileId);
   if (!action) return dispatchDefault(req, res, user, profileId);
   return sendError(res, 400, '不支援的 action。');
 };
