@@ -401,13 +401,54 @@ details.panel[open] summary { margin-bottom: 16px; }
 
 /* ---------- 產出報告動作列 ---------- */
 
-.step-actions { display: flex; gap: 8px; }
+.step-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- 篩選列（手法庫 / 報告資料庫） ---------- */
+
+.filter-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 12px 14px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.filter-bar input[type="text"], .filter-bar select { margin: 0; width: auto; min-width: 140px; padding: 7px 10px; font-size: 13px; }
+.filter-bar input[type="text"] { flex: 1; min-width: 180px; }
+.filter-bar .choice { margin: 0; font-size: 13px; }
+.filter-bar button { flex-shrink: 0; }
+
+/* ---------- 填空模板（手法庫 × 痛點比對） ---------- */
+
+.template-block {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 14px; margin-top: 10px; background: #fff;
+}
+.template-block .tb-type { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; color: var(--teal-dark); margin-bottom: 6px; letter-spacing: 0.03em; }
+.template-block .tb-text { font-size: 13.5px; line-height: 1.7; white-space: pre-line; }
+.template-block .tb-text .blank { color: var(--flag); font-weight: 600; background: var(--flag-bg, rgba(191,110,40,0.1)); border-radius: 3px; padding: 0 3px; }
+.template-block .tb-guide { font-size: 12px; color: var(--ink-soft); margin-top: 6px; font-style: italic; }
+.template-usage-note { font-size: 12.5px; color: var(--ink-soft); margin-top: 10px; border-left: 2px solid var(--line-strong); padding-left: 10px; }
+
+.match-card {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 10px; background: #fff;
+}
+.match-card .match-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.match-card .match-score { font-family: var(--font-mono); font-size: 11px; color: var(--teal-dark); white-space: nowrap; }
+
+/* ---------- 洞察報告資料庫 ---------- */
+
+.report-library-card {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px 16px; margin-bottom: 8px; background: #fff;
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.report-library-card .rlc-meta { font-size: 13px; }
+.report-library-card .rlc-meta .rlc-label { font-weight: 600; }
+.report-library-card .rlc-meta .rlc-sub { color: var(--ink-soft); font-size: 12px; margin-top: 2px; }
 
 /* ---------- 重複偵測提示 / 一般 confirm 對話樣式沿用瀏覽器原生 ---------- */
 
 @media print {
   header, #auth-panel, #status, #composer-panel > .panel, #profile-scope > .panel:not(.report-panel-print-target),
-  details.swipe, .step-actions, .r-sort, .sort-label, #report-history, button { display: none !important; }
+  details.swipe, #report-library-panel, .step-actions, .r-sort, .sort-label, #report-history, button { display: none !important; }
   .report-panel { box-shadow: none; border: none; padding: 0; }
   body { background: #fff; }
   main { max-width: 100%; padding: 0; }
