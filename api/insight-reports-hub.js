@@ -175,12 +175,17 @@ async function handleGet(req, res, user, id) {
   }
 }
 
-// 列出某個領域設定過去產出的報告（不含 id 時用 ?domain_profile_id= 篩選），供「歷史報告」列表使用。
+// 列出過去產出的報告：
+//   - 帶 domain_profile_id：只列出該產品/服務設定底下的報告（既有的「歷史報告」用途）。
+//   - 不帶：列出這個使用者名下「所有」產品/服務設定產出過的報告，供「洞察報告資料庫」
+//     瀏覽模式使用——依領域／受眾／價格帶篩選的邏輯留在前端做（比對 domain_profile_id
+//     對應到已經載入的產品/服務設定清單），這裡只負責把資料撈出來，不用另外處理跨表格的
+//     篩選查詢字串，降低出錯風險。
 async function handleList(req, res, user) {
   const { domain_profile_id } = req.query || {};
   try {
-    let query = `insight_reports?user_id=eq.${user.id}&select=id,domain_profile_id,status,created_at,coverage:report->coverage&order=created_at.desc&limit=20`;
-    if (domain_profile_id) query += `&domain_profile_id=eq.${domain_profile_id}`;
+    let query = `insight_reports?user_id=eq.${user.id}&select=id,domain_profile_id,status,created_at,coverage:report->coverage&order=created_at.desc`;
+    query += domain_profile_id ? `&domain_profile_id=eq.${domain_profile_id}&limit=20` : `&limit=100`;
     const items = await restRequest(query);
     return res.status(200).json(items);
   } catch (err) {
