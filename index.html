@@ -56,6 +56,12 @@
 </div>
 <label>解決方案說明<textarea name="solution_description" required placeholder="具體說明這個產品／服務如何解決上面設定的受眾痛點"></textarea></label>
 <label>信任背書（選填）<input name="trust_proof" placeholder="例：3000+ 學員實測、專業教練設計"></label>
+<fieldset><legend>呈現媒介限制（選填）</legend>
+<p class="muted" style="margin:0 0 8px">勾選後，AI 在分析潛在受眾、產出報告建議時會避開這些媒介形式，改側重文字信任感與圖解等形式。</p>
+<label class="choice"><input type="checkbox" name="constraints" value="no_face"> 不露臉</label>
+<label class="choice"><input type="checkbox" name="constraints" value="no_short_video"> 不使用短影音</label>
+<label class="choice"><input type="checkbox" name="constraints" value="text_only"> 純文字與圖文排版</label>
+</fieldset>
 <button type="submit" id="profile-form-submit">建立產品／服務設定</button>
 <button type="button" id="profile-form-cancel" class="ghost">取消</button>
 </form>
