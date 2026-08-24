@@ -14,6 +14,64 @@ const MAX_TEXT_LENGTH = 5000;
 // 太保守；前端會依這個上限自動切批送出，這裡只要放寬到合理範圍即可。
 const MAX_BATCH_SIZE = 200;
 
+// ── 匯入前過濾：雜訊語料 ──────────────────────────────────────────────
+// 對應「AI 用量最佳化」的第 2 點：像「+1」「推」「謝謝」這類零資訊語料，就算送進 AI
+// 也萃取不出任何有語料佐證的痛點，純粹浪費批次的名額與 token；與其在萃取階段才發現沒用，
+// 不如在匯入這一關就先擋下來，不寫進資料庫，之後選取語料進行分析時自然也不會再送進 AI。
+//
+// 兩層判斷都要有，缺一不可：
+//   ①黑名單完全比對（正規化後）：擋掉已知的零資訊慣用語，例如「推」「+1」「謝謝分享」。
+//   ②正規化後長度門檻：擋掉黑名單沒列到、但明顯太短沒有情境的內容（例如純標點、單一 emoji）。
+// 刻意不用「長度門檻」單獨判斷，因為像「太貴」「很懶」這種雖然短、但本身就是一個完整痛點
+// 訊號的語料，不應該被長度門檻誤殺——這類語料黑名單裡不會有，也通常不會低於長度門檻，
+// 兩層判斷合起來才不會又誤殺、又漏放。
+const NOISE_EXACT_MATCHES = new Set([
+  '+1', '+1推', '推', '推!', '推！', '推推', '推爆', '推一個', '推一下', '推一波', '推坑成功',
+  '讚', '讚讚', '讚啦', '讚喔', '大讚', '棒', '太棒了', '厲害', '推薦',
+  '謝謝', '感謝', '謝謝分享', '感謝分享', '謝謝老闆', '感謝老闆',
+  '支持', '支持一下', '路過', '簽到', '頂', '頂一個', '頂上去',
+  '已購買', '已下單', '已購入', '已入手', '手刀入手', '已敗', '已敗入', '已收藏', '先收藏', '心得+1', '心得推',
+  '好', '好用', '不錯', '還不錯', '超讚', '超好用', 'cp值高', 'cp值超高', 'c/p值高',
+]);
+// 移除標點、空白、常見語助詞尾綴後仍不足這個長度，視為缺乏情境的雜訊。
+// 刻意設得很低（只擋掉 0~1 字，例如純標點、單一 emoji、空白）：中文有意義的抱怨常常
+// 很短（例如「太貴了」「很懶」只有 2~3 字，但已經是完整的痛點訊號），長度門檻若設太高，
+// 反而會把這類真正有價值的短語料一起濾掉。真正沒意義的短語，交給上面的黑名單完全比對處理，
+// 而不是靠長度門檻概括承受。
+const MIN_MEANINGFUL_LENGTH = 2;
+
+function normalizeForNoiseCheck(s) {
+  return (s || '')
+    .trim()
+    .replace(/[\s\u3000]/g, '')
+    .replace(/[!！?？~～.。,，、…]/g, '')
+    .toLowerCase();
+}
+
+// 只依表情符號／標點把「看起來字數夠但沒有實質內容」的內容排除在長度計算之外
+// （例如「😂😂😂😂」正規化後字數不算少，但完全沒有描述任何情境）。
+function stripSymbols(s) {
+  return (s || '').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
+}
+
+function isNoiseFeedback(rawText) {
+  const normalized = normalizeForNoiseCheck(rawText);
+  if (!normalized) return true;
+  if (NOISE_EXACT_MATCHES.has(normalized)) return true;
+  if (stripSymbols(normalized).length < MIN_MEANINGFUL_LENGTH) return true;
+  return false;
+}
+
+// ── 匯入前過濾：完全重複的語料 ────────────────────────────────────────
+// 對應第 3 點：不引入額外的 hash 欄位或套件，直接對同一個產品/服務設定（或未分類語料）
+// 底下既有的語料做「正規化後完全比對」，擋掉一字不差的重複匯入（最常見情境：不小心把
+// 同一份 CSV 或同一段文字貼了兩次）。刻意只做完全比對、不做模糊相似度比對——近似重複
+// （改寫過的相似句子）留給既有的痛點合併機制（audience_pain_points 的 bigram 相似度）
+// 在萃取階段處理，避免這裡比對太寬鬆，把兩則語意接近但其實是不同顧客講的話誤判成重複。
+function normalizeForDedup(s) {
+  return (s || '').trim().replace(/\s+/g, ' ');
+}
+
 // 把使用者輸入或 CSV 欄位裡的日期字串正規化成 ISO 字串；無法解析就當作沒有提供，不擋匯入。
 function normalizeDate(v) {
   if (!v) return null;
@@ -83,7 +141,43 @@ async function handleCreate(req, res, user) {
       if (!owned.length) return sendError(res, 404, '找不到對應的產品/服務設定。');
     }
 
-    const dbRows = rows.map(r => ({
+    // 第一層過濾：擋掉「+1」「推」之類缺乏情境的雜訊語料，不寫入資料庫，之後選取語料
+    // 進行分析時自然也不會被送進 AI。
+    const noiseSkipped = [];
+    const afterNoiseFilter = rows.filter(r => {
+      if (isNoiseFeedback(r.raw_text)) { noiseSkipped.push(r.raw_text); return false; }
+      return true;
+    });
+
+    // 第二層過濾：擋掉跟同一個產品/服務設定（或未分類語料）底下既有紀錄「一字不差」的重複匯入。
+    // 只查詢同一個 scope（同一個 domain_profile_id，或都未分類）底下的既有語料，
+    // 不用整個帳號的所有語料去比對，避免不同產品間語意相近但其實是不同情境的內容被誤擋。
+    const existingQuery = domain_profile_id
+      ? `raw_customer_feedback?user_id=eq.${user.id}&domain_profile_id=eq.${domain_profile_id}&select=raw_text`
+      : `raw_customer_feedback?user_id=eq.${user.id}&domain_profile_id=is.null&select=raw_text`;
+    const existingRows = await restRequest(existingQuery);
+    const existingTexts = new Set(existingRows.map(r => normalizeForDedup(r.raw_text)));
+
+    const seenInThisBatch = new Set();
+    const duplicateSkipped = [];
+    const afterDedup = afterNoiseFilter.filter(r => {
+      const key = normalizeForDedup(r.raw_text);
+      if (existingTexts.has(key) || seenInThisBatch.has(key)) { duplicateSkipped.push(r.raw_text); return false; }
+      seenInThisBatch.add(key);
+      return true;
+    });
+
+    if (!afterDedup.length) {
+      return res.status(200).json({
+        imported: 0,
+        items: [],
+        skipped_noise: noiseSkipped.length,
+        skipped_duplicate: duplicateSkipped.length,
+        message: `這批語料在過濾後沒有新內容可匯入（${noiseSkipped.length} 筆疑似缺乏情境的雜訊、${duplicateSkipped.length} 筆與既有語料完全重複），未寫入任何資料。`,
+      });
+    }
+
+    const dbRows = afterDedup.map(r => ({
       user_id: user.id,
       domain_profile_id: domain_profile_id || null,
       source_type: sourceType,
@@ -100,7 +194,21 @@ async function handleCreate(req, res, user) {
     });
 
     const savedList = Array.isArray(saved) ? saved : [saved];
-    return res.status(200).json({ imported: savedList.length, items: savedList });
+
+    const skipParts = [];
+    if (noiseSkipped.length) skipParts.push(`${noiseSkipped.length} 筆疑似缺乏情境的雜訊（如「推」「+1」）已自動略過`);
+    if (duplicateSkipped.length) skipParts.push(`${duplicateSkipped.length} 筆與既有語料完全重複已自動略過`);
+    const message = skipParts.length
+      ? `已匯入 ${savedList.length} 筆語料；${skipParts.join('、')}。`
+      : undefined;
+
+    return res.status(200).json({
+      imported: savedList.length,
+      items: savedList,
+      skipped_noise: noiseSkipped.length,
+      skipped_duplicate: duplicateSkipped.length,
+      message,
+    });
   } catch (err) {
     return sendError(res, 500, err.message);
   }
