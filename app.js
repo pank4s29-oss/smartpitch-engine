@@ -33,6 +33,40 @@ const api = async (url, opts = {}) => {
 function setStatus(msg, isError = false) {
   status.textContent = msg;
   status.classList.toggle('error', isError);
+  showInlineNotice(msg, isError);
+}
+
+// ---------------- 就近顯示通知 ----------------
+// 問題：原本所有 setStatus() 呼叫只會更新頁面最上方那一條 #status，使用者點了頁面
+// 中／下段的按鈕之後，看不到任何反應，得自己往上拉才看得到結果或錯誤訊息。
+// 解法：用 capture 階段的全域 click 監聽器，記住「使用者最後點的是哪個按鈕」，
+// 之後任何地方呼叫 setStatus() 時，除了照舊更新最上方的狀態列，也順便在那顆按鈕
+// 旁邊浮現一個小提示。這樣完全不用改動檔案裡其他四十幾處 setStatus() 呼叫。
+let lastActionEl = null;
+document.addEventListener('click', e => {
+  const el = e.target.closest('button, .fb-delete, [role="button"]');
+  if (el) lastActionEl = el;
+}, true);
+
+function showInlineNotice(msg, isError) {
+  const anchor = lastActionEl;
+  if (!anchor || !document.body.contains(anchor)) return;
+  // 同一顆按鈕若還留著上一次的提示，先移除，避免疊加成一長串。
+  if (anchor._inlineNotice && anchor._inlineNotice.parentNode) anchor._inlineNotice.remove();
+  clearTimeout(anchor._inlineNoticeTimer);
+
+  const rect = anchor.getBoundingClientRect();
+  const notice = document.createElement('div');
+  notice.className = 'inline-notice' + (isError ? ' error' : '');
+  notice.textContent = msg;
+  notice.style.top = (rect.bottom + window.scrollY + 6) + 'px';
+  notice.style.left = Math.max(8, Math.min(rect.left + window.scrollX, window.innerWidth - 300)) + 'px';
+  document.body.append(notice);
+  anchor._inlineNotice = notice;
+
+  const dismiss = () => { notice.remove(); window.removeEventListener('scroll', dismiss, true); };
+  window.addEventListener('scroll', dismiss, true); // 捲動後座標就不對了，直接收掉比讓它飄在錯位置好
+  anchor._inlineNoticeTimer = setTimeout(dismiss, isError ? 6000 : 4000);
 }
 
 // ---------------- 領域設定 ----------------
@@ -1061,10 +1095,24 @@ function renderReport(report, meta) {
     : '';
 
   const sortSelect = node.querySelector('.r-sort');
+  const sortLabel = node.querySelector('.r-sort-label');
   const breakdownEl = node.querySelector('.r-breakdown');
+  const toggleBtn = node.querySelector('.r-toggle-breakdown');
   const points = Array.isArray(report.pain_points) ? report.pain_points : [];
   renderReportBreakdown(breakdownEl, points, sortSelect.value);
   sortSelect.addEventListener('change', () => renderReportBreakdown(breakdownEl, points, sortSelect.value));
+
+  // 逐項分析預設收合：報告一開始只顯示摘要統計／導讀／風險提示，避免每次查看報告
+  // 都直接把整個頁面撐得很長，需要的人再點一次展開完整的痛點清單。
+  breakdownEl.hidden = true;
+  sortLabel.hidden = true;
+  toggleBtn.textContent = '顯示逐項分析 →';
+  toggleBtn.onclick = () => {
+    const willShow = breakdownEl.hidden;
+    breakdownEl.hidden = !willShow;
+    sortLabel.hidden = !willShow;
+    toggleBtn.textContent = willShow ? '收合逐項分析 ←' : '顯示逐項分析 →';
+  };
 
   node.querySelector('.r-print').onclick = () => window.print();
 
@@ -1282,7 +1330,10 @@ function reportLibraryCardHtml(r) {
       <div class="rlc-label">${esc(label)}</div>
       <div class="rlc-sub">${created}｜痛點 ${c.total_pain_points ?? '—'} 筆，已確認 ${c.confirmed ?? '—'} 筆${profile ? '｜' + esc(profile.price_tier === 'low' ? '低單價／快速決策' : '高客單／建立信任') : ''}</div>
     </div>
-    <button type="button" class="small secondary rlc-view">查看報告</button>
+    <div class="rlc-actions">
+      <button type="button" class="small secondary rlc-view">查看報告</button>
+      <button type="button" class="small danger ghost rlc-delete">刪除</button>
+    </div>
   </div>`;
 }
 
@@ -1323,6 +1374,19 @@ function renderReportLibrary() {
         renderReport(result.report, '報告資料庫');
         $('#report-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
       } catch (err) { setStatus('⚠ ' + err.message, true); }
+    };
+  });
+  listEl.querySelectorAll('.rlc-delete').forEach(btn => {
+    const card = btn.closest('.report-library-card');
+    btn.onclick = async () => {
+      if (!confirm('確定要刪除這份報告嗎？此操作無法復原。')) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/insight-reports/${card.dataset.id}`, { method: 'DELETE' });
+        reportLibraryCache = reportLibraryCache.filter(r => r.id !== card.dataset.id);
+        renderReportLibrary();
+        setStatus('已刪除報告。');
+      } catch (err) { setStatus('⚠ ' + err.message, true); btn.disabled = false; }
     };
   });
 }
@@ -1659,6 +1723,40 @@ if (buildMatrixBtn) {
     finally { buildMatrixBtn.disabled = false; buildMatrixBtn.textContent = original; }
   };
 }
+
+// ---------------- 帳號角落元件（身份確認收合） ----------------
+// 顯示名稱／登入狀態完全由 auth.js 透過 'auth:change' 自訂事件廣播，這裡只負責
+// 收合面板的展開/收起，以及把事件內容顯示在角落的小標籤上，不用再靠猜測
+// #auth-status 文字內容或 MutationObserver 反推狀態。
+
+const cornerToggle = $('#account-corner-toggle');
+const cornerPanel = $('#account-corner-panel');
+if (cornerToggle && cornerPanel) {
+  cornerToggle.onclick = () => { cornerPanel.hidden = !cornerPanel.hidden; };
+  document.addEventListener('click', e => {
+    if (!cornerPanel.hidden && !e.target.closest('#account-corner')) cornerPanel.hidden = true;
+  });
+}
+
+function updateCornerLabel(detail) {
+  const cornerLabel = $('#account-corner-label');
+  const dot = document.querySelector('.account-corner-dot');
+  if (!cornerLabel) return;
+  if (!detail || !detail.loggedIn) {
+    cornerLabel.textContent = '尚未登入';
+    if (dot) dot.style.background = 'var(--muted, #9aa0a6)';
+    return;
+  }
+  const label = detail.displayName || detail.email || '已登入';
+  cornerLabel.textContent = label.length > 14 ? label.slice(0, 14) + '…' : label;
+  if (dot) dot.style.background = '#2f7a3d';
+}
+
+window.addEventListener('auth:change', e => {
+  updateCornerLabel(e.detail);
+  // 剛登入/註冊成功就自動收合面板，不用使用者自己再點一次關掉。
+  if (e.detail && e.detail.loggedIn && cornerPanel) cornerPanel.hidden = true;
+});
 
 // ---------------- 初始化 ----------------
 
