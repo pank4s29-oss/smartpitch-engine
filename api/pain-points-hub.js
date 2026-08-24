@@ -14,6 +14,34 @@ const EXTRACT_MAX_BATCH_SIZE = 20;
 
 const norm = s => (s || '').trim().toLowerCase();
 
+// ── 白話化與反黑話規則 ──────────────────────────────────────────────────
+// 所有會寫進 surface_problem／deep_desire／detail 的 prompt 都要附上這段規則，
+// 避免 AI 把痛點寫成「知識變現」「商業底層邏輯」這類行銷黑話——這些詞對系統使用者
+// （行銷／內容操作者）很熟悉，但痛點報告最終是要拿去比對「消費者自己會怎麼講」，
+// 黑話反而讓人看不出這個痛點到底具不具體、真不真實。
+const PLAIN_LANGUAGE_RULE = `
+語言規則（務必遵守）：
+- surface_problem、deep_desire、detail 一律使用一般消費者會自己講出口的白話文字，
+  想像是這位受眾在跟朋友抱怨或聊天時會用的說法。
+- 禁止使用行銷／商業黑話或包裝過的策略術語，例如「知識變現」「商業底層邏輯」「賦能」
+  「痛點外顯化」「價值主張」「解決方案矩陣」「賽道」之類的詞——即使語料或提示中出現這類詞，
+  輸出時也要轉譯成具體的白話描述，不可直接照搬。
+- 若某個詞彙是該領域受眾自己會用的專業術語或行話（例如健身受眾講「增肌減脂」、投資受眾講
+  「配息」），可以保留，因為那是受眾的語言，不是分析者的黑話；但仍需搭配白話解釋，讓不懂
+  這個領域的人也看得懂在講什麼。`;
+
+// ── 在地化語感（台灣市場） ────────────────────────────────────────────────
+// 只用在「分析真實語料」的情境（extract）——這是唯一會直接讀到使用者貼上的社群留言／
+// 評論／逐字稿原文的地方，suggest／segments 是模型憑領域和受眾發想草稿，沒有真實在地
+// 語料可以參照，硬加這段規則沒有實質作用。
+const TW_LOCALE_RULE = `
+在地語感規則：
+- 這些語料可能包含台灣網路社群的表達方式（例如 Dcard、PTT、Threads 上常見的口語、縮寫、
+  反諷或自嘲式講法），解讀時請以台灣在地使用者的語境理解其真實情緒與語氣，不要照字面直翻
+  或誤判反諷語氣為字面意思。
+- 語料中若使用縮寫、鄉民用語或流行語，可以在 surface_problem／deep_desire 中改寫為清楚的
+  白話描述，不需要保留原始縮寫或黑話，但意思與情緒強度要忠於原文，不可過度誇大或淡化。`;
+
 // ── 跨批次去重合併 ──────────────────────────────────────────────────────
 // 語料量一大，使用者通常得分好幾批送去分析（單批最多 EXTRACT_MAX_BATCH_SIZE 筆），
 // 同一個痛點很容易在不同批次裡各自被 AI 萃取出來一次，變成好幾筆幾乎一樣的紀錄，
@@ -162,6 +190,7 @@ async function handleSuggest(req, res, user, profileId) {
 - surface_problem：表層問題（一句話）
 - deep_desire：背後的深層渴望（一句話）
 - detail：完整陳述（4-6 句，150-250 字），內容至少涵蓋：①這個痛點通常在什麼具體情境或時間點浮現、②背後的成因或誘發因素、③對受眾造成的實際影響（時間、金錢、情緒、人際關係等面向擇要說明）、④這個受眾過去可能嘗試過但沒有真正解決的做法。寫得像是可以直接放進受眾研究報告的一段敘述，讓使用者不用再腦補就能理解全貌。
+${PLAIN_LANGUAGE_RULE}
 
 輸出格式：[{"surface_problem":"...","deep_desire":"...","detail":"..."}, ...]`;
 
@@ -199,7 +228,9 @@ async function handleExtract(req, res, user, profileId) {
 2. quote 從對應語料原文擷取最能代表這個痛點的一小段（不超過 40 字），不可整段照抄。
 3. detail 是給使用者看的完整陳述（4-6 句，150-250 字），至少涵蓋：①這個痛點通常在語料描述的什麼情境或時間點出現、②語料中透露出的成因、③造成的實際困擾或後果（具體一點，不要只寫「很困擾」）、④語料中有沒有透露出使用者曾嘗試過什麼因應方式、效果如何。內容必須根據語料本身，不可額外腦補語料沒提到的細節；若語料資訊不足以支撐某一項，可以省略該項，但整體仍需具體、不可流於空泛套語。
 4. 不要輸出語料裡完全沒有依據、純粹用常識腦補的痛點。
-5. 同一個痛點如果在多筆語料中都有出現，要合併成一條、evidence_indices 列出全部相關編號，不要重複拆成多條。`;
+5. 同一個痛點如果在多筆語料中都有出現，要合併成一條、evidence_indices 列出全部相關編號，不要重複拆成多條。
+${TW_LOCALE_RULE}
+${PLAIN_LANGUAGE_RULE}`;
 
     const prompt = `【領域】${profile.domain_tag}
 【目標受眾】${profile.audience}
@@ -345,9 +376,23 @@ async function handleSegments(req, res, user, profileId) {
       return res.status(200).json({ segments: [], message: '尚無可分析的痛點（已駁回的痛點不計入），請先建立或萃取痛點。' });
     }
 
-    const system = `你是受眾區隔顧問。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
+// 呈現媒介限制（business_constraints）目前只在建立產品/服務設定時寫入資料庫，尚未被任何
+// AI 分析流程實際讀取使用；這裡把它接進「潛在受眾地圖」，讓每個反推出來的族群不只是「是誰」，
+// 還能建議「適合賣給他們的數位資產形式」，並且這個建議必須尊重使用者設定的媒介限制
+// （例如不露臉、不用短影音），對應企劃書中「限制條件矩陣」與「產品化建議模組」的精神。
+const CONSTRAINT_LABELS = {
+  no_face: '不露臉',
+  no_short_video: '不使用短影音',
+  text_only: '純文字與圖文排版',
+};
+    const constraintsLine = Array.isArray(profile.business_constraints) && profile.business_constraints.length
+      ? profile.business_constraints.map(c => CONSTRAINT_LABELS[c] || c).join('、')
+      : '';
+
+    const system = `你是受眾區隔顧問，同時也是數位產品規劃顧問。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
 任務：從一份受眾痛點清單，反推出可能存在的「潛在／隱藏受眾」——也就是表面上都屬於同一個目標受眾，
-但實際上動機、情境或急迫程度不同的細分族群。每個痛點可以同時屬於多個族群。
+但實際上動機、情境或急迫程度不同的細分族群。每個痛點可以同時屬於多個族群，並針對每個族群建議適合的
+數位資產販售形式，避免使用者只能靠賣時間（一對一服務）變現。
 規則：
 1. 抓出 2-5 個有區別度的族群。每個族群都必須比「目前設定的目標受眾」更細分、更具體，絕對不能只是把
    目標受眾的描述換句話說、加一兩個形容詞，或原封不動地重述。如果反推出來的族群跟目標受眾幾乎無法
@@ -356,16 +401,21 @@ async function handleSegments(req, res, user, profileId) {
 3. matched_indices 只能填入下方清單中實際存在的編號，不可捏造。
 4. differentiation 欄位要明確寫出「這個族群跟目前設定的目標受眾『${profile.audience}』具體有什麼不同」，
    不能只寫「更精準」這種空泛描述，要講清楚差在哪個面向。
-5. 若清單裡的痛點明顯無法反映出多元受眾（例如全部指向同一種情境），可以回傳少於 2 個族群，並在對應的 note 欄位說明原因。`;
+5. 若清單裡的痛點明顯無法反映出多元受眾（例如全部指向同一種情境），可以回傳少於 2 個族群，並在對應的 note 欄位說明原因。
+6. suggested_formats：針對這個族群，建議 1-3 種適合的「數位資產形式」（例如：自動化線上課程、SOP／檢核表模板、
+   高單價一對一顧問方案、訂閱制社群、圖解懶人包、純文字電子報等），並各附一句話說明為什麼適合這個族群的處境
+   （例如「沒時間但有預算，適合高單價一對一」）。${constraintsLine ? `\n7. 這個使用者對呈現媒介設有限制：${constraintsLine}，建議的形式必須能在這些限制下實現，不可建議違反限制的形式（例如限制「不露臉」或「不使用短影音」時，不可建議需要出鏡或短影音的形式）。` : ''}
+${PLAIN_LANGUAGE_RULE}`;
 
     const prompt = `【領域】${profile.domain_tag}
 【目前設定的目標受眾（反推出的族群不可與此重複或僅為換句話說）】${profile.audience}
+【呈現媒介限制】${constraintsLine || '無特別限制'}
 
 【痛點清單】（編號從 0 開始）
 ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴望：${p.deep_desire}`).join('\n')}
 
 請輸出：
-{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境與典型情境（2-4句，具體描述，不要空泛）","rationale":"為什麼這些痛點特別打中他們（2-3句）","differentiation":"跟目前目標受眾『${profile.audience}』具體差在哪裡（1-2句）","matched_indices":[0,2]}],"note":"若整體區隔度不高，說明原因（選填）"}`;
+{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境與典型情境（2-4句，具體描述，不要空泛）","rationale":"為什麼這些痛點特別打中他們（2-3句）","differentiation":"跟目前目標受眾『${profile.audience}』具體差在哪裡（1-2句）","matched_indices":[0,2],"suggested_formats":[{"format":"...","reason":"..."}]}],"note":"若整體區隔度不高，說明原因（選填）"}`;
 
     const raw = await call({ system, prompt, maxTokens: 1800, budgetMs: SEGMENTS_AI_BUDGET_MS });
     const parsed = parseJSON(raw);
@@ -386,16 +436,20 @@ ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴�
       .filter(s => !isDuplicateOfAudience(s.segment_name) && !isDuplicateOfAudience(s.description))
       .map(s => {
         const indices = Array.isArray(s.matched_indices) ? s.matched_indices.filter(i => points[i]) : [];
+        const suggestedFormats = Array.isArray(s.suggested_formats)
+          ? s.suggested_formats.filter(f => f && f.format).map(f => ({ format: f.format, reason: f.reason || '' })).slice(0, 3)
+          : [];
         return {
           segment_name: s.segment_name || '未命名族群',
           description: s.description || '',
           rationale: s.rationale || '',
           differentiation: s.differentiation || '',
           matched_pain_point_ids: indices.map(i => points[i].id),
+          suggested_formats: suggestedFormats,
         };
       }).filter(s => s.matched_pain_point_ids.length);
 
-    return res.status(200).json({ segments, note: parsed && parsed.note, based_on_count: points.length });
+    return res.status(200).json({ segments, note: parsed && parsed.note, based_on_count: points.length, constraints_applied: constraintsLine || null });
   } catch (err) {
     return sendError(res, 500, err.message);
   }
