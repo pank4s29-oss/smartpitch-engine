@@ -7,6 +7,7 @@ const { call, parseJSON } = require('./_lib/provider');
 // 對應的 vercel.json rewrites 會把兩個路徑都導到這支檔案，前端網址不需要改。
 
 const AI_BUDGET_MS = Number(process.env.SWIPE_AI_BUDGET_MS || 25000);
+const TEMPLATE_AI_BUDGET_MS = Number(process.env.SWIPE_TEMPLATE_AI_BUDGET_MS || 25000);
 const EDITABLE_FIELDS = ['industry_tag', 'framework_tag', 'emotion_tags', 'angle_type', 'block_breakdown', 'raw_content', 'extracted_pain_points'];
 
 // 分析一篇廣告文案，回傳結構化結果。handleCreate（第一次分析）跟 handleReanalyze
@@ -76,10 +77,125 @@ ${raw_content}
   };
 }
 
-async function handleList(req, res, user) {
+// ── 高轉化文案 → 填空模板 ──────────────────────────────────────────────
+// 對應企劃書「Swipe 高轉化模板自動帶入」：把手法庫裡一篇已分析過的文案，改寫成使用者可以
+// 直接套自己產品資訊的「填空模板」，而不是要使用者自己去揣摩怎麼仿寫。
+// 設計原則：
+//   ①保留原文案的結構／區塊順序／修辭節奏，但把跟特定產品、品牌、數字綁定的具體內容抽成
+//     用中括號標示的佔位符（例如 [產品名稱]、[核心痛點]），輸出時不可逐字沿用原文句子。
+//   ②依 block_breakdown 既有的區塊順序逐一改寫，不用另外設計新的區塊拆解邏輯，直接沿用
+//     swipe_copies 分析時已經拆好的結構。
+//   ③結果快取在 swipe_copies.fill_in_template（jsonb），避免使用者每次點開都重打一次 AI；
+//     只有明確要求 regenerate=true 才會覆蓋重新產生。
+async function generateFillInTemplate(swipe) {
+  const blockOrder = Array.isArray(swipe.block_breakdown) && swipe.block_breakdown.length
+    ? swipe.block_breakdown
+    : ['hook', 'pain_agitate', 'solution', 'cta'];
+
+  const system = `你是廣告文案策略師，任務是把一篇已分析過的廣告文案改寫成「可重複使用的填空模板」，
+供使用者套用在自己的產品/服務上，而不是直接沿用這篇文案的內容。只能輸出合法 JSON，不能有任何前後
+說明文字或 Markdown 圍籬。
+規則：
+1. 保留原文案的結構、修辭手法、句子節奏與情緒強度，但把所有跟「特定產品、品牌、數字、專有名詞、
+   具體情境」綁定的內容改寫成用中括號標示的佔位符，例如 [產品名稱]、[核心痛點]、[具體數字或期限]、
+   [信任背書]、[目標受眾的具體處境]。
+2. 絕對不可逐字沿用原文案的句子——這是「改寫成可重複使用的模板」，不是摘錄，佔位符以外的
+   句子也要是重新撰寫過的版本，只保留寫作手法、語氣與節奏。
+3. 除非某個區塊的功能性質上就不需要客製內容（例如純粹的過場語氣詞），否則每個區塊的 template
+   文字裡至少要有一個佔位符。
+4. fill_guide 用一句話說明使用者在這個區塊該填入什麼、要注意什麼（例如語氣拿捏、建議長度）。
+5. usage_note 是整份模板的使用說明（2-3 句），提醒使用者套用時務必換成自己產品的真實資訊，
+   且此模板僅供參考手法架構，實際成效會因產業與受眾不同而有落差，不保證效果，發布前建議人工複核。`;
+
+  const prompt = `以下是一篇已分析過的廣告文案（僅供學習其結構與手法，輸出時不可逐字複製原文字句）：
+"""
+${swipe.raw_content.slice(0, 2000)}
+"""
+
+【文案區塊順序】${blockOrder.join(' → ')}
+【產業／領域】${swipe.industry_tag || '未分類'}
+【行銷框架】${swipe.framework_tag || '未分類'}
+
+請依照上方區塊順序，逐一改寫成填空模板，輸出格式：
+{"blocks":[{"type":"hook","template":"...（含佔位符的改寫版本，不可逐字沿用原文）","fill_guide":"..."}, ...依區塊順序，共 ${blockOrder.length} 組],"usage_note":"..."}`;
+
+  const raw = await call({ system, prompt, maxTokens: 1600, budgetMs: TEMPLATE_AI_BUDGET_MS });
+  const parsed = parseJSON(raw);
+  if (!parsed || !Array.isArray(parsed.blocks) || !parsed.blocks.length) {
+    throw new Error('模型回應格式不符預期（缺少 blocks 陣列），請稍後再試一次。');
+  }
+  const blocks = parsed.blocks
+    .filter(b => b && b.type && b.template)
+    .map(b => ({ type: b.type, template: b.template, fill_guide: b.fill_guide || null }));
+  if (!blocks.length) throw new Error('模型未能產生有效的模板區塊，請稍後再試一次。');
+
+  return { blocks, usage_note: parsed.usage_note || null, generated_at: new Date().toISOString() };
+}
+
+// GET /api/swipe-copies/:id/template（可加 ?regenerate=true 強制重新產生並覆蓋快取）。
+// 有快取且未要求重新產生時直接回傳快取內容，不消耗 AI 額度。
+async function handleTemplate(req, res, user, id) {
+  if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
+  const regenerate = (req.query || {}).regenerate === 'true';
   try {
-    const items = await restRequest(`swipe_copies?user_id=eq.${user.id}&select=*&order=created_at.desc`);
+    const [swipe] = await restRequest(
+      `swipe_copies?id=eq.${id}&user_id=eq.${user.id}&select=id,raw_content,block_breakdown,industry_tag,framework_tag,fill_in_template`
+    );
+    if (!swipe) return sendError(res, 404, '找不到對應的範例文案。');
+
+    if (!regenerate && swipe.fill_in_template) {
+      return res.status(200).json({ template: swipe.fill_in_template, cached: true });
+    }
+
+    const template = await generateFillInTemplate(swipe);
+
+    const [updated] = await restRequest(`swipe_copies?id=eq.${id}&user_id=eq.${user.id}`, {
+      method: 'PATCH',
+      prefer: 'return=representation',
+      body: { fill_in_template: template },
+    });
+
+    return res.status(200).json({ template: (updated && updated.fill_in_template) || template, cached: false });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+// 資料庫瀏覽模式：依產業／框架／角度（下拉選單，候選值來自 handleFacets）與關鍵字（q，
+// 對文案內文做 ilike 模糊比對）篩選。has_pain_points 因為要判斷「陣列長度 > 0」而不是
+// 單純 null／not null，PostgREST 的 filter 語法不好表達，所以篩選條件本身丟給資料庫做，
+// 這一項留在應用層做最後過濾——量體不大（單一使用者的手法庫），效能可以接受。
+async function handleList(req, res, user) {
+  const { q, industry_tag, framework_tag, angle_type, has_pain_points } = req.query || {};
+  try {
+    let query = `swipe_copies?user_id=eq.${user.id}&select=*&order=created_at.desc`;
+    if (industry_tag) query += `&industry_tag=eq.${encodeURIComponent(industry_tag)}`;
+    if (framework_tag) query += `&framework_tag=eq.${encodeURIComponent(framework_tag)}`;
+    if (angle_type) query += `&angle_type=eq.${encodeURIComponent(angle_type)}`;
+    if (q && q.trim()) query += `&raw_content=ilike.${encodeURIComponent('*' + q.trim() + '*')}`;
+
+    let items = await restRequest(query);
+    if (has_pain_points === 'true') {
+      items = items.filter(x => Array.isArray(x.extracted_pain_points) && x.extracted_pain_points.length > 0);
+    }
     return res.status(200).json(items);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+// 篩選下拉選單的候選值：只回傳這個使用者的手法庫裡「實際存在」的產業／框架／角度，
+// 不用寫死清單，也不會出現選了之後篩不出任何結果的選項。
+async function handleFacets(req, res, user) {
+  if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
+  try {
+    const rows = await restRequest(`swipe_copies?user_id=eq.${user.id}&select=industry_tag,framework_tag,angle_type`);
+    const uniqSorted = key => [...new Set(rows.map(r => r[key]).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+    return res.status(200).json({
+      industry_tag: uniqSorted('industry_tag'),
+      framework_tag: uniqSorted('framework_tag'),
+      angle_type: uniqSorted('angle_type'),
+    });
   } catch (err) {
     return sendError(res, 500, err.message);
   }
@@ -132,6 +248,10 @@ async function handleReanalyze(req, res, user, id) {
         angle_type: analysis.angle_type,
         block_breakdown: analysis.block_breakdown,
         extracted_pain_points: analysis.extractedPainPoints,
+        // 重新分析可能改變區塊拆解或分類，先前快取的填空模板是依舊分析結果產生，
+        // 不清掉的話會出現「模板」跟「分析結果」對不起來的情況，寧可讓使用者下次點開時
+        // 重新產生一次，也不要顯示過時的模板。
+        fill_in_template: null,
         edited_at: new Date().toISOString(),
       },
     });
@@ -150,6 +270,8 @@ async function handleUpdate(req, res, user, id) {
     if (req.body && req.body[key] !== undefined) patch[key] = req.body[key];
   }
   if (!Object.keys(patch).length) return sendError(res, 400, '沒有要更新的欄位。');
+  // 原文或區塊拆解一旦被手動改過，舊的填空模板就不再對應目前內容，清掉快取讓下次重新產生。
+  if (patch.raw_content !== undefined || patch.block_breakdown !== undefined) patch.fill_in_template = null;
   patch.edited_at = new Date().toISOString();
 
   try {
@@ -178,7 +300,12 @@ module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
 
-  const { id } = req.query || {};
+  const { id, action } = req.query || {};
+
+  if (action === 'facets') return handleFacets(req, res, user);
+
+  if (id && action === 'template') return handleTemplate(req, res, user, id);
+
   if (id) {
     if (req.method === 'PUT') return handleUpdate(req, res, user, id);
     if (req.method === 'DELETE') return handleDelete(req, res, user, id);
