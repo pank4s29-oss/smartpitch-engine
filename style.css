@@ -558,6 +558,13 @@ details.meta-sync > summary {
   line-height: 1;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
+/* 修正：上面 display:flex 這種「作者樣式」的優先權天生就贏過瀏覽器內建的
+   [hidden]{display:none}，不管選擇器優先度高低都一樣，所以只設定
+   settingsBtn.hidden = true 完全不會讓按鈕消失。這裡另外補一條更明確
+   （ID + 屬性選擇器）的規則蓋掉它，hidden 屬性才會真的生效。 */
+#account-settings-btn[hidden] {
+  display: none;
+}
 #account-corner-toggle {
   display: flex;
   align-items: center;
@@ -606,6 +613,13 @@ details.meta-sync > summary {
   align-items: flex-start;
   justify-content: center;
   padding: 80px 16px 16px;
+}
+/* 同上一個問題：這個 overlay 蓋滿全螢幕、z-index 80，若 display:flex 沒有正確
+   被 hidden 屬性蓋掉，即使視覺上看起來已經「關閉」，這層看不見的遮罩仍會擋住
+   底下所有點擊，包含登出後要重新登入時的帳號角落面板——這正是「登出後點不進
+   登入表單」的根本原因，不是登入邏輯本身壞掉。 */
+#account-settings-overlay[hidden] {
+  display: none;
 }
 #account-settings-dialog {
   width: min(420px, 100%);
