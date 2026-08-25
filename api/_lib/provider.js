@@ -6,16 +6,18 @@
 // 要切回 Claude：設環境變數 LLM_PROVIDER=anthropic
 const PROVIDER = process.env.LLM_PROVIDER || 'gemini';
 
-let call, parseJSON;
+let call, callVision, parseJSON;
 
 if (PROVIDER === 'anthropic') {
   const anthropic = require('./anthropic');
   call = anthropic.callClaude;
+  callVision = anthropic.callClaudeVision;
   parseJSON = anthropic.parseJSON;
 } else {
   const gemini = require('./gemini');
   call = gemini.callGemini;
+  callVision = gemini.callGeminiVision; // 內建 Gemini 失敗時改用 Claude 的跨供應商備援，見 gemini.js。
   parseJSON = gemini.parseJSON;
 }
 
-module.exports = { call, parseJSON, PROVIDER };
+module.exports = { call, callVision, parseJSON, PROVIDER };
