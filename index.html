@@ -5,7 +5,7 @@
 <div>
 <p class="eyebrow">AUDIENCE STRATEGY & META AD VALIDATION ENGINE</p>
 <h1>先驗證受眾洞察，再用真實花費數據驗證。</h1>
-<p class="subtitle">匯入真實顧客語料、萃取並驗證痛點；廣告上線後回灌 Meta 成效數據，用真實 CTR／CPA／CVR／ROAS 交叉驗證哪個痛點真的有效——每個數字都算得出來源，不是模型憑常識猜的。</p>
+<p class="subtitle">匯入真實顧客語料、萃取並驗證痛點；廣告上線後回灌 Meta 成效數據，用「點閱率、單次轉換成本、轉換率、廣告投報率」這些真實數據交叉驗證哪個痛點真的有效——每個數字都算得出來源，不是模型憑常識猜的。</p>
 </div>
 <span class="badge">痛點驗證工作台</span>
 </header>
@@ -15,10 +15,13 @@
      原本的命名，交由既有的 auth.js 繼續控管登入/註冊邏輯本身，這裡只負責外觀與收合/展開，
      不介入 auth.js 的行為，降低把登入功能改壞的風險。-->
 <div id="account-corner">
+<div class="account-corner-bar">
 <button type="button" id="account-corner-toggle" aria-haspopup="true">
 <span class="account-corner-dot" aria-hidden="true"></span>
 <span id="account-corner-label">尚未登入</span>
 </button>
+<button type="button" id="account-settings-btn" class="ghost small" hidden title="帳號設定" aria-label="帳號設定">⚙</button>
+</div>
 <div id="account-corner-panel" hidden>
 <section class="panel" id="auth-panel">
 <div class="step-heading"><b>ID</b><div><h2>身份確認</h2><p>工作台僅保存你自己的資料，需先登入。</p></div></div>
@@ -28,15 +31,30 @@
 <label>Email<input name="email" type="email" autocomplete="email" required></label>
 <label>密碼<input name="password" type="password" autocomplete="current-password" minlength="6" required></label>
 </div>
-<label>顯示名稱（選填）<input name="display_name" type="text" maxlength="30" placeholder="例如：小明（選填，註冊時可直接設定）"></label>
+<label>顯示名稱（選填，註冊時可直接設定）<input name="display_name" type="text" maxlength="30" placeholder="例如：小明（選填，註冊時可直接設定）"></label>
 <div class="auth-actions">
 <button id="auth-signin" type="submit">登入</button>
 <button id="auth-signup" type="button" class="secondary">註冊新帳號</button>
 <button id="auth-signout" type="button" class="secondary" hidden>登出</button>
-<button id="auth-update-name" type="button" class="ghost small" hidden>更新顯示名稱</button>
 </div>
 </form>
 </section>
+</div>
+</div>
+
+<!-- 帳號設定：獨立於登入面板之外的功能按鍵，登入後才會顯示在使用者名稱旁邊，
+     點擊後開啟這個小型 modal，讓「登入/註冊」與「修改個人帳號設定」是兩件分開的事。 -->
+<div id="account-settings-overlay" hidden>
+<div id="account-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="account-settings-title">
+<div class="step-heading"><b>⚙</b><div><h2 id="account-settings-title">帳號設定</h2><p>管理你的顯示名稱與帳號資訊。</p></div></div>
+<p class="muted" id="account-settings-email"></p>
+<label>顯示名稱<input id="account-settings-name-input" type="text" maxlength="30" placeholder="未設定則顯示 Email"></label>
+<div class="auth-actions">
+<button type="button" id="account-settings-save">儲存顯示名稱</button>
+<button type="button" id="account-settings-close" class="ghost">關閉</button>
+</div>
+<hr class="divider">
+<button type="button" id="account-settings-signout" class="danger ghost small">登出</button>
 </div>
 </div>
 
@@ -85,55 +103,69 @@
 <div id="profile-scope" hidden>
 
 <section class="panel">
-<div class="step-heading"><b>02</b><div><h2>語料匯入</h2><p>貼上真實顧客評論、客服對話或訪談逐字稿——每則之間空一行即可一次貼多則。</p></div></div>
+<div class="step-heading"><b>02</b><div><h2>語料匯入與痛點紀錄</h2><p>新增一則真實語料時，請同時填寫這則語料對應的痛點——語料是佐證，痛點才是後續報告與文案會用到的洞察，兩者一起建立才不會脫節。</p></div></div>
 <div id="label-manager" class="label-manager"></div>
 <form id="feedback-form">
 <label>語料來源<select name="source_type" id="source-type-select"></select></label>
-<label>語料內容<textarea name="raw_texts" required placeholder="貼上一則或多則真實顧客語料，多則請以空行分隔"></textarea></label>
-<button type="submit">匯入語料</button>
+<label>語料內容<textarea name="raw_text" required placeholder="貼上一則真實顧客語料（例如一則評論、一句客服對話）"></textarea></label>
+<hr class="divider">
+<p class="muted" style="margin-bottom:10px">這則語料反映了什麼痛點？請一併填寫：</p>
+<div class="grid">
+<label>表層問題<input name="surface_problem" placeholder="例：下班太累，運動難以持續" required></label>
+<label>深層渴望<input name="deep_desire" placeholder="例：不犧牲生活也能維持健康" required></label>
+</div>
+<label>詳細陳述（選填）<textarea name="detail" placeholder="具體說明這個痛點通常在什麼情境下發生、造成什麼實際影響"></textarea></label>
+<button type="submit">新增語料並記錄痛點</button>
 </form>
+
 <hr class="divider">
 <details class="csv-import">
-<summary><strong>或上傳 CSV 檔案批次匯入</strong><span class="muted">適合整批匯出的評論、問卷回覆、客服紀錄</span></summary>
-<p class="muted" style="margin:10px 0 12px">請先在上方選擇語料來源分類，再上傳 CSV。系統會讀取表頭欄位，讓你指定哪一欄是語料內容，日期與評分則為選填；其餘欄位會整批存成補充資訊，供之後分析使用。</p>
+<summary><strong>進階：批次匯入語料（不逐筆對應痛點）</strong><span class="muted">適合整批匯出的評論、問卷回覆、客服紀錄，匯入後再勾選交由 AI 分析</span></summary>
+<p class="muted" style="margin:10px 0 12px">批次匯入不會強制逐筆填寫痛點；匯入後可在下方語料清單中勾選，交由 AI 分析萃取痛點，或之後再回來手動補上。</p>
+<form id="batch-feedback-form">
+<label>語料內容（多則請以空行分隔）<textarea name="raw_texts" required placeholder="貼上多則真實顧客語料，每則之間空一行"></textarea></label>
+<button type="submit" class="secondary">批次匯入</button>
+</form>
+<hr class="divider">
+<p class="muted" style="margin:10px 0 12px">或上傳 CSV 檔案：請先在上方選擇語料來源分類，系統會讀取表頭欄位，讓你指定哪一欄是語料內容，日期與評分則為選填；其餘欄位會整批存成補充資訊，供之後分析使用。</p>
 <input type="file" id="csv-file-input" accept=".csv,text/csv">
 <div id="csv-mapping-panel"></div>
 </details>
 <div id="feedback-list"><p class="muted">尚無已匯入的語料。</p></div>
-<button type="button" id="extract-btn" class="secondary" disabled>對已勾選的語料開始分析 →</button>
-</section>
+<button type="button" id="extract-btn" class="secondary" disabled>對已勾選的語料，交由 AI 分析萃取痛點 →</button>
 
-<section class="panel">
-<div class="step-heading"><b>03</b><div><h2>痛點清單</h2><p>每筆痛點的置信度來自「有多少語料佐證」，不是 AI 自己打的分數。</p><div class="step-actions"><button type="button" id="matched-templates-btn" class="ghost small">比對高轉化模板 →</button></div></div></div>
+<hr class="divider">
+<div class="step-heading" style="margin-top:6px"><b>&#9679;</b><div><h3 style="margin:0">目前痛點清單</h3><p>每筆痛點的置信度來自「有多少語料佐證」，不是 AI 自己打的分數。</p></div><div class="step-actions"><button type="button" id="matched-templates-btn" class="ghost small">比對高轉化模板 →</button></div></div>
 <div id="matched-templates-result"></div>
 <details class="advanced-tools">
-<summary>進階：AI 輔助草稿工具</summary>
-<p class="muted" style="margin:10px 0 12px">以下兩項是模型憑領域與受眾發想的草稿，沒有真實語料或廣告成效佐證，僅供發想參考。若已累積 Meta 廣告成效數據，建議優先參考下方「Meta 廣告效益驗證」區塊的痛點轉換矩陣，那是用真實 CTR／CPA 驗證過的結果。</p>
+<summary>進階：AI 輔助草稿／不綁語料手動新增</summary>
+<p class="muted" style="margin:10px 0 12px">以下三項都沒有直接綁定真實語料佐證，僅供發想或補充參考。若已累積 Meta 廣告成效數據，建議優先參考下方「Meta 廣告效益驗證」區塊的痛點轉換矩陣，那是用真實成效驗證過的結果。</p>
 <div class="step-actions">
 <button type="button" id="swipe-import-btn" class="ghost small">從文案手法庫帶入</button>
 <button type="button" id="suggest-btn" class="ghost small">AI 建議草稿</button>
 </div>
 <div id="suggest-preview"></div>
-</details>
+<hr class="divider">
 <form id="manual-pain-form">
 <div class="grid">
 <label>表層問題<input name="surface_problem" placeholder="例：下班太累，運動難以持續" required></label>
 <label>深層渴望<input name="deep_desire" placeholder="例：不犧牲生活也能維持健康" required></label>
 </div>
 <label>詳細陳述（選填）<textarea name="detail" placeholder="具體說明這個痛點通常在什麼情境下發生、造成什麼實際影響"></textarea></label>
-<button type="submit" class="secondary">手動新增一筆</button>
+<button type="submit" class="secondary">手動新增一筆（不綁語料）</button>
 </form>
+</details>
 <hr class="divider">
-<div id="pain-list"><p class="muted">尚無痛點，請先匯入語料分析，或手動新增。</p></div>
+<div id="pain-list"><p class="muted">尚無痛點，請先於上方新增語料並填寫對應痛點。</p></div>
 </section>
 
 <section class="panel">
-<div class="step-heading"><b>04</b><div><h2>潛在受眾地圖</h2><p>反推目前的痛點清單背後，可能存在哪些沒被明講、但真實存在的細分受眾。</p><div class="step-actions"><button type="button" id="segments-btn" class="ghost small">分析潛在受眾 →</button></div></div></div>
+<div class="step-heading"><b>03</b><div><h2>潛在受眾地圖</h2><p>反推目前的痛點清單背後，可能存在哪些沒被明講、但真實存在的細分受眾。</p><div class="step-actions"><button type="button" id="segments-btn" class="ghost small">分析潛在受眾 →</button></div></div></div>
 <div id="segments-result"><p class="muted">尚未分析。點擊「分析潛在受眾」，系統會根據目前的痛點清單（已駁回者不計入）反推可能的受眾族群。</p></div>
 </section>
 
 <section class="panel">
-<div class="step-heading"><b>05</b><div><h2>產出洞察報告</h2><p>彙整目前所有痛點的驗證狀態、覆蓋率與風險提示。</p></div></div>
+<div class="step-heading"><b>04</b><div><h2>產出洞察報告</h2><p>彙整目前所有痛點的驗證狀態、覆蓋率與風險提示。</p></div></div>
 <button type="button" id="generate-report-btn">產出報告 →</button>
 <div id="report-history" class="muted" style="margin-top:14px"></div>
 </section>
@@ -141,16 +173,21 @@
 <section id="report-result" hidden></section>
 
 <section class="panel" id="ad-copies-panel">
-<div class="step-heading"><b>06</b><div><h2>Meta 廣告效益驗證</h2><p>廣告上線後，把真實花費數據回灌進來——同一份文案不管回灌幾次都只標籤化一次，用真實 CTR／CPA／CVR／ROAS 交叉驗證哪個痛點真的打得動人，而不是靠 AI 猜置信度。</p></div></div>
+<div class="step-heading"><b>05</b><div><h2>Meta 廣告效益驗證</h2><p>廣告上線後，把真實花費數據回灌進來——同一份文案不管回灌幾次都只標籤化一次，用「有多少人點、花多少錢轉換一次、賺不賺得回廣告費」這些真實數據交叉驗證哪個痛點真的打得動人，而不是靠 AI 猜置信度。</p></div></div>
 
 <form id="ad-copy-form">
 <label>廣告文案內容<textarea name="raw_content" required placeholder="貼上一則已投放的 Meta 廣告文案…"></textarea></label>
+<fieldset><legend>投放版位（選填，可複選）</legend>
+<label class="choice"><input type="checkbox" name="platform" value="facebook"> Facebook</label>
+<label class="choice"><input type="checkbox" name="platform" value="instagram"> Instagram</label>
+<label class="choice"><input type="checkbox" name="platform" value="audience_network"> Audience Network</label>
+<label class="choice"><input type="checkbox" name="platform" value="messenger"> Messenger</label>
+</fieldset>
 <div class="grid">
-<label>投放版位（選填）<select name="platform"><option value="facebook">Facebook</option><option value="instagram">Instagram</option><option value="audience_network">Audience Network</option><option value="messenger">Messenger</option></select></label>
 <label>花費（選填）<input name="spend" type="number" step="0.01" placeholder="例：500"></label>
+<label>曝光數（選填）<input name="impressions" type="number" placeholder="例：10000"></label>
 </div>
 <div class="grid">
-<label>曝光數（選填）<input name="impressions" type="number" placeholder="例：10000"></label>
 <label>點擊數（選填）<input name="clicks" type="number" placeholder="例：300"></label>
 <label>轉換數（選填）<input name="conversions" type="number" placeholder="例：12"></label>
 </div>
@@ -191,7 +228,7 @@
 <div id="ad-copy-list"><p class="muted">尚無已匯入的廣告文案。</p></div>
 
 <hr class="divider">
-<div class="step-heading"><b>&#9679;</b><div><h3 style="margin:0">效益驗證矩陣</h3><p>依真實成效交叉計算「痛點轉換矩陣」與「高 CTR 結構模板」，純運算不呼叫 AI。</p></div></div>
+<div class="step-heading"><b>&#9679;</b><div><h3 style="margin:0">效益驗證矩陣</h3><p>依真實成效交叉計算「痛點轉換矩陣」與「高點閱率結構模板」，純運算不呼叫 AI。</p></div></div>
 <button type="button" id="build-matrix-btn" class="secondary">產出效益驗證矩陣 →</button>
 <div id="matrix-result"></div>
 </section>
@@ -293,6 +330,7 @@
 <div class="narrative r-narrative"></div>
 <div class="stat-grid r-stats"></div>
 <div class="r-risks"></div>
+<div class="r-ad-highlights"></div>
 <div class="framework-box r-framework"></div>
 
 <hr class="divider">
@@ -306,6 +344,7 @@
 <option value="confidence_asc">置信度：低到高</option>
 <option value="status">複核狀態</option>
 <option value="evidence_desc">佐證則數：多到少</option>
+<option value="ad_ctr_desc">真實廣告點閱率：高到低</option>
 </select>
 </label>
 </div>
@@ -326,6 +365,7 @@
 <span class="rr-evidence"></span>
 <span class="rr-confidence"></span>
 </div>
+<div class="rr-ad-performance"></div>
 <div class="rr-solution"></div>
 </article>
 </template>
