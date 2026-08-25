@@ -225,6 +225,13 @@ button.small { padding: 5px 10px; font-size: 12.5px; }
 .pain-card h3 { font-size: 15.5px; }
 .pain-card .deep-desire { color: var(--ink-soft); font-size: 13.5px; margin-top: 4px; }
 .pain-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; font-size: 12.5px; color: var(--ink-soft); }
+
+/* 成效指標（點閱率／單次轉換成本／轉換率／廣告投報率）旁邊都帶有 title 提示文字，
+   用虛線底線提示這裡可以滑鼠移上去看白話說明，不是純裝飾文字。 */
+.pain-meta span[title] {
+  border-bottom: 1px dotted var(--muted, #9aa0a6);
+  cursor: help;
+}
 .evidence-ticks { display: inline-flex; gap: 2px; align-items: center; }
 .evidence-ticks .tick { width: 5px; height: 12px; background: var(--line-strong); border-radius: 1px; }
 .evidence-ticks .tick.on { background: var(--evidence); }
@@ -312,6 +319,14 @@ details.csv-import[open] summary { margin-bottom: 4px; }
   display: flex; gap: 8px; align-items: flex-start;
   background: var(--flag-bg); border: 1px solid var(--flag);
   border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; font-size: 13px; color: #6B3D18;
+}
+
+/* 廣告成效亮點：跟風險提示（.risk-flag 橘黃色系）刻意用不同的綠色系，
+   一眼就能分辨「這是警示」還是「這是值得放心投入的正向訊號」。 */
+.risk-flag.ad-highlight {
+  background: rgba(47, 122, 61, 0.08);
+  border-color: #2f7a3d;
+  color: #1e5228;
 }
 
 .narrative {
@@ -526,6 +541,23 @@ details.meta-sync > summary {
   flex-direction: column;
   align-items: flex-end;
 }
+.account-corner-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#account-settings-btn {
+  border-radius: 999px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
 #account-corner-toggle {
   display: flex;
   align-items: center;
@@ -560,6 +592,33 @@ details.meta-sync > summary {
 }
 #auth-form input[name="display_name"] {
   min-width: 0;
+}
+
+/* ============================================================================
+ * 帳號設定 modal（獨立於登入面板之外，登入後點角落的「⚙」開啟）
+ * ============================================================================ */
+#account-settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(20, 22, 26, 0.32);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 80px 16px 16px;
+}
+#account-settings-dialog {
+  width: min(420px, 100%);
+  background: var(--bg, #fff);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+}
+#account-settings-dialog .auth-actions {
+  margin-top: 14px;
+}
+#account-settings-signout {
+  width: 100%;
 }
 
 /* ============================================================================
