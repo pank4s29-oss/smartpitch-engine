@@ -93,10 +93,17 @@ async function handleList(req, res, user, profileId) {
 }
 
 async function handleCreate(req, res, user, profileId) {
-  const { surface_problem, deep_desire, detail, source } = req.body || {};
+  const { surface_problem, deep_desire, detail, source, evidence_source } = req.body || {};
   if (!surface_problem || !deep_desire) {
     return sendError(res, 400, '請填寫表層問題與深層渴望。');
   }
+  // evidence_source（選填）：與這筆痛點同時建立的真實語料佐證，格式與 AI 萃取時一致
+  // （[{ raw_customer_feedback_id, quote }]）。前端「語料匯入與痛點紀錄」合併流程會在
+  // 新增一則語料的同時帶入這則語料自己的 id，讓手動輸入的痛點也能像 AI 萃取一樣有
+  // 語料佐證可以統計，而不是永遠顯示「佐證 0 則語料」。
+  const evidence = Array.isArray(evidence_source)
+    ? evidence_source.filter(e => e && e.raw_customer_feedback_id)
+    : [];
   try {
     const owned = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=id`);
     if (!owned.length) return sendError(res, 404, '找不到對應的產品/服務設定。');
@@ -111,6 +118,10 @@ async function handleCreate(req, res, user, profileId) {
         deep_desire,
         detail: detail || null,
         source: source || 'user_input',
+        evidence_source: evidence,
+        // 使用者匯入語料的同時直接附上真實佐證，視同已驗證，給滿分置信度；
+        // 沒有附上佐證的手動新增則維持原本沒有置信度分數（null）的行為，不受影響。
+        confidence_score: evidence.length ? 1 : null,
       },
     });
     return res.status(200).json(point);
