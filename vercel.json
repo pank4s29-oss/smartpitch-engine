@@ -25,7 +25,7 @@
   ],
   "functions": {
     "api/swipe-copies-hub.js": {
-      "maxDuration": 30
+      "maxDuration": 45
     },
     "api/pain-points-hub.js": {
       "maxDuration": 45
@@ -35,6 +35,9 @@
     },
     "api/ad-copies-hub.js": {
       "maxDuration": 30
+    },
+    "api/raw-feedback-hub.js": {
+      "maxDuration": 45
     },
     "api/**/*.js": {
       "maxDuration": 30
