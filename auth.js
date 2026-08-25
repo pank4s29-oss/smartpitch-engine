@@ -2,6 +2,15 @@
   let client = null;
   let session = null;
 
+  // 清理顯示名稱：去除複製貼上時容易夾帶的零寬字元／不換行空白（.trim() 清不掉這些字元，
+  // 存進 user_metadata 後畫面上會呈現看起來像空白的符號），並統一 trim 前後空白。
+  // 清理後若變成空字串，回傳 null，讓呼叫端可以用 || 接續退回 email 等預設值。
+  function cleanDisplayName(raw) {
+    return (raw || '')
+      .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
+      .trim() || null;
+  }
+
   async function initAuth() {
     let cfg;
     try {
@@ -37,32 +46,31 @@
     }
 
     client.auth.onAuthStateChange(async (_event, s) => {
-  session = s;
-  // 這個 callback 訂閱當下一定會非同步觸發一次 INITIAL_SESSION 事件，帶的是 SDK
-  // 內部快取的 session，並沒有經過上面 getUser() 的校正，直接蓋回去會把剛剛修好的
-  // user_metadata 又蓋回舊版，導致角落名稱跳回 email 或顯示異常（含空白字元）。
-  // 所以這裡也比照上面的作法，重新跟伺服器核對一次最新的 user 再渲染。
-  if (session) {
-    try {
-      const { data: { user: freshUser } } = await client.auth.getUser();
-      if (freshUser) session = { ...session, user: freshUser };
-    } catch (_) { /* 忽略，沿用目前 session */ }
+      session = s;
+      // 這個 callback 訂閱當下一定會非同步觸發一次 INITIAL_SESSION 事件，帶的是 SDK
+      // 內部快取的 session，並沒有經過上面 getUser() 的校正，直接蓋回去會把剛剛修好的
+      // user_metadata 又蓋回舊版，導致角落名稱跳回 email 或顯示異常（含看起來像空白的字元）。
+      // 所以這裡也比照上面的作法，每次事件觸發都重新跟伺服器核對一次最新的 user 再渲染，
+      // 不管是註冊/登入當下的 INITIAL_SESSION，還是之後的 TOKEN_REFRESHED 等事件皆同。
+      if (session) {
+        try {
+          const { data: { user: freshUser } } = await client.auth.getUser();
+          if (freshUser) session = { ...session, user: freshUser };
+        } catch (_) { /* 忽略，沿用目前 session */ }
+      }
+      renderAuthUI();
+    });
+    renderAuthUI();
+    wireAuthForm();
   }
-  renderAuthUI();
-});
-renderAuthUI();
-wireAuthForm();
 
-  function cleanDisplayName(raw) {
-  return (raw || '')
-    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '') // 零寬字元、不換行空白，複製貼上時很容易夾帶進來
-    .trim() || null;
-}
-
-function currentDisplayName() {
-  const raw = session && session.user && session.user.user_metadata && session.user.user_metadata.display_name;
-  return cleanDisplayName(raw);
-}
+  // 顯示名稱存在 Supabase Auth 內建的 user_metadata 裡（signUp 的 options.data，或事後
+  // 用 updateUser({ data }) 更新），不需要額外的資料表或後端 API——這樣顯示名稱天生就
+  // 跟著使用者的登入狀態走，RLS／權限也完全交給 Supabase 自己處理。
+  function currentDisplayName() {
+    const raw = session && session.user && session.user.user_metadata && session.user.user_metadata.display_name;
+    return cleanDisplayName(raw);
+  }
 
   function renderAuthUI() {
     const status = document.querySelector('#auth-status');
@@ -142,7 +150,8 @@ function currentDisplayName() {
   // user 物件，並整個換掉 session.user，資料來源正確、不用再手動拼湊。
   window.updateDisplayName = async function (name) {
     if (!client || !session) throw new Error('請先登入。');
-    const { data, error } = await client.auth.updateUser({ data: { display_name: name } });
+    const cleaned = cleanDisplayName(name);
+    const { data, error } = await client.auth.updateUser({ data: { display_name: cleaned } });
     if (error) throw new Error(error.message);
     if (data && data.user) session = { ...session, user: data.user };
     renderAuthUI();
