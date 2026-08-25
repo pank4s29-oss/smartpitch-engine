@@ -1,4 +1,11 @@
 const { getUserFromRequest, restRequest, sendError } = require('./_lib/supabase');
+const { normalizeImages, ocrImageToText } = require('./_lib/vision');
+
+// 一次匯入最多允許幾張圖片：圖片 OCR 是逐張呼叫 AI，張數上限刻意設得比純文字匯入
+// （MAX_BATCH_SIZE，見下方）低很多，避免使用者一次選了幾十張截圖，單一次請求
+// 因為要依序呼叫幾十次 AI 而超過 Vercel 函式的執行時限（vercel.json 目前設定
+// api/**/*.js 的 maxDuration 是 30 秒）。
+const MAX_IMAGE_BATCH_SIZE = 8;
 
 // 這支合併了原本 2 支獨立檔案：
 //   GET/POST  /api/raw-feedback      (無 id)
@@ -103,18 +110,36 @@ async function handleList(req, res, user) {
 }
 
 async function handleCreate(req, res, user) {
-  const { domain_profile_id, source_type, raw_text, raw_texts, items } = req.body || {};
+  const { domain_profile_id, source_type, raw_text, raw_texts, items, images } = req.body || {};
 
   const sourceType = (source_type || '').trim();
   if (!sourceType) return sendError(res, 400, '請選擇語料來源分類。');
   if (sourceType.length > MAX_LABEL_LENGTH) return sendError(res, 400, `分類名稱不可超過 ${MAX_LABEL_LENGTH} 字。`);
 
-  // 兩種匯入路徑統一轉成同一種內部格式（rows）再寫入：
+  // 三種匯入路徑統一轉成同一種內部格式（rows）再寫入：
   //   1. items：結構化匯入（例如前端解析 CSV 後送來），每筆可以帶 occurred_at／rating／meta，
   //      讓語料除了純文字之外，還能保留「這則語料本身的日期、評分，以及其他原始欄位」這些脈絡。
   //   2. raw_text／raw_texts：既有的純文字貼上匯入，維持原本行為，日期/評分一律是空值。
+  //   3. images：截圖／圖片匯入（例如顧客評論、社群留言的截圖）。逐張呼叫 AI 做 OCR
+  //      轉出文字，轉出來的文字之後跟純文字匯入走同一套雜訊過濾／去重／寫入流程，
+  //      不另外重複寫一次——OCR 只負責「把圖片變成文字」這一步。
   let rows;
-  if (Array.isArray(items) && items.length) {
+  let ocrFailures = [];
+  if (Array.isArray(images) && images.length) {
+    const normalizedImages = normalizeImages(images, MAX_IMAGE_BATCH_SIZE);
+    const ocrResults = await Promise.all(normalizedImages.map(async (img, i) => {
+      try {
+        const text = await ocrImageToText(img);
+        return { ok: true, text };
+      } catch (err) {
+        return { ok: false, index: i, message: err.message };
+      }
+    }));
+    ocrFailures = ocrResults.filter(r => !r.ok).map(r => `第 ${r.index + 1} 張：${r.message}`);
+    rows = ocrResults
+      .filter(r => r.ok && r.text)
+      .map(r => ({ raw_text: r.text, occurred_at: null, rating: null, meta: { imported_via: 'image_ocr' } }));
+  } else if (Array.isArray(items) && items.length) {
     rows = items
       .map(it => ({
         raw_text: typeof (it && it.raw_text) === 'string' ? it.raw_text.trim() : '',
@@ -130,7 +155,10 @@ async function handleCreate(req, res, user) {
     rows = texts.map(text => ({ raw_text: text, occurred_at: null, rating: null, meta: {} }));
   }
 
-  if (!rows.length) return sendError(res, 400, '請提供至少一筆語料內容（raw_text／raw_texts，或結構化的 items）。');
+  if (!rows.length) {
+    if (ocrFailures.length) return sendError(res, 502, `圖片文字辨識失敗：${ocrFailures.join('；')}`);
+    return sendError(res, 400, '請提供至少一筆語料內容（raw_text／raw_texts、結構化的 items，或 images）。');
+  }
   if (rows.length > MAX_BATCH_SIZE) return sendError(res, 400, `單次最多匯入 ${MAX_BATCH_SIZE} 筆語料，請分批匯入。`);
   const tooLong = rows.find(r => r.raw_text.length > MAX_TEXT_LENGTH);
   if (tooLong) return sendError(res, 400, `單篇語料內容不可超過 ${MAX_TEXT_LENGTH} 字，請縮短後再匯入（可考慮拆成多篇）。`);
@@ -198,6 +226,7 @@ async function handleCreate(req, res, user) {
     const skipParts = [];
     if (noiseSkipped.length) skipParts.push(`${noiseSkipped.length} 筆疑似缺乏情境的雜訊（如「推」「+1」）已自動略過`);
     if (duplicateSkipped.length) skipParts.push(`${duplicateSkipped.length} 筆與既有語料完全重複已自動略過`);
+    if (ocrFailures.length) skipParts.push(`${ocrFailures.length} 張圖片辨識失敗（${ocrFailures.join('；')}）`);
     const message = skipParts.length
       ? `已匯入 ${savedList.length} 筆語料；${skipParts.join('、')}。`
       : undefined;
@@ -207,6 +236,7 @@ async function handleCreate(req, res, user) {
       items: savedList,
       skipped_noise: noiseSkipped.length,
       skipped_duplicate: duplicateSkipped.length,
+      ocr_failed: ocrFailures.length,
       message,
     });
   } catch (err) {
