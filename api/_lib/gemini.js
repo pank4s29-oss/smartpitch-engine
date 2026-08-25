@@ -316,10 +316,67 @@ async function callGemini({ system, prompt, maxTokens = 3000, budgetMs }) {
   );
 }
 
+// 呼叫 Gemini，附帶一張或多張圖片（base64）+ 文字 prompt，用於 OCR／圖片內容分析。
+// 注意：跟 callGemini 不同，這裡刻意不套用檔案開頭那整套多次重試／fair-share timeout
+// 的邏輯——圖片分析是使用者上傳一張截圖後明確點擊觸發的單次操作，量體遠低於文案生成，
+// 不需要那套為了「批次生成不能被限流卡死」設計的複雜重試機制；單次嘗試 Gemini 主模型，
+// 失敗且有設定 ANTHROPIC_API_KEY 時，改試 Claude 的圖片分析當作跨供應商備援即可。
+async function requestGeminiVision(model, { system, prompt, images, maxTokens }, timeoutMs) {
+  return fetchWithTimeout(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: system ? { parts: [{ text: system }] } : undefined,
+        contents: [{
+          role: 'user',
+          parts: [
+            ...images.map(img => ({ inline_data: { mime_type: img.media_type, data: img.data } })),
+            { text: prompt },
+          ],
+        }],
+        generationConfig: {
+          maxOutputTokens: maxTokens,
+          thinkingConfig: { thinkingLevel: THINKING_LEVEL },
+        },
+        safetySettings: SAFETY_SETTINGS,
+      }),
+    },
+    timeoutMs
+  );
+}
+
+async function callGeminiVision({ system, prompt, images, maxTokens = 1500, budgetMs }) {
+  if (!Array.isArray(images) || !images.length) {
+    throw new Error('缺少要分析的圖片內容。');
+  }
+  const timeoutMs = Math.min(MAX_ATTEMPT_TIMEOUT_MS, Math.max(MIN_ATTEMPT_TIMEOUT_MS, budgetMs || DEFAULT_BUDGET_MS));
+
+  if (GEMINI_API_KEY) {
+    try {
+      const res = await requestGeminiVision(GEMINI_MODEL, { system, prompt, images, maxTokens }, timeoutMs);
+      if (res.ok) return await extractText(res);
+      const text = await res.text();
+      console.error(`[gemini-vision] model=${GEMINI_MODEL} HTTP ${res.status} → ${text.slice(0, 300)}`);
+    } catch (err) {
+      console.error(`[gemini-vision] model=${GEMINI_MODEL} 呼叫失敗：${err.message}`);
+    }
+  }
+
+  if (process.env.ANTHROPIC_API_KEY) {
+    const { callClaudeVision } = require('./anthropic');
+    console.warn('[gemini-vision] Gemini 圖片分析失敗或未設定 GEMINI_API_KEY，改用 Claude 作為跨供應商備援。');
+    return await callClaudeVision({ system, prompt, images, maxTokens, timeoutMs });
+  }
+
+  throw new Error('AI 圖片辨識功能呼叫失敗（Gemini 未回應，且未設定 ANTHROPIC_API_KEY 可供備援），請稍後再試一次。');
+}
+
 // 從模型回應中取出 JSON（去除可能的 ```json 圍籬）。
 function parseJSON(text) {
   const cleaned = text.replace(/```json|```/g, '').trim();
   return JSON.parse(cleaned);
 }
 
-module.exports = { callGemini, parseJSON };
+module.exports = { callGemini, callGeminiVision, parseJSON };
