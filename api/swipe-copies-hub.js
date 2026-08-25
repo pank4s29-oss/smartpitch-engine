@@ -1,5 +1,6 @@
 const { getUserFromRequest, restRequest, sendError } = require('./_lib/supabase');
-const { call, parseJSON } = require('./_lib/provider');
+const { call, callVision, parseJSON } = require('./_lib/provider');
+const { normalizeImage, ocrImageToText } = require('./_lib/vision');
 
 // 這支合併了原本 2 支獨立檔案：
 //   GET/POST      /api/swipe-copies      (無 id)
@@ -68,6 +69,63 @@ ${raw_content}
     }));
 
   return {
+    industry_tag: classified.industry_tag,
+    framework_tag: classified.framework_tag,
+    emotion_tags: classified.emotion_tags || [],
+    angle_type: classified.angle_type,
+    block_breakdown: classified.block_breakdown || [],
+    extractedPainPoints,
+  };
+}
+
+// 直接分析「圖片版廣告」（例如純視覺的圖片廣告、輪播廣告截圖），不先轉成文字。
+// 跟 analyzeSwipeCopy 的差異：純 OCR 只抓得到圖片裡的文字，但很多廣告創意的說服力
+// 來自版面配置、圖像本身傳達的情境/情緒、文字與畫面的搭配方式，這些 OCR 轉不出來。
+// 這裡讓模型直接「看圖」分析，輸出格式跟 analyzeSwipeCopy 完全一致，多回傳一個
+// transcript（畫面上讀得到的文字，供 raw_content 欄位使用，讓這篇範例文案在列表裡
+// 一樣能被關鍵字搜尋／閱讀），沿用同一套下游流程（存進 swipe_copies、萃取痛點）。
+async function analyzeSwipeCopyFromImage(image, industryHint) {
+  const system = `你是廣告文案策略分析師，同時也是市場洞察分析師，具備從廣告視覺創意（不只是文字）判讀行銷手法的能力。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
+可用的文案區塊類型（block type）僅限於：hook, pain_agitate, solution, trust_proof, emotional_close, urgency, cta。
+分析時請把「這則廣告鎖定了受眾的什麼痛點、為什麼判斷打這個痛點有效、受眾想被看見的形象是什麼」放在第一優先；
+除了畫面上的文字之外，也要納入版面配置、圖像內容、色調氛圍等視覺線索一起判斷，不要只分析文字部分。
+情緒訴求手法（emotion_tags／angle_type）只是輔助資訊，重要性次之，不要花太多篇幅在情緒標籤上。`;
+
+  const prompt = `請分析這張廣告創意圖片，並輸出：
+- transcript：畫面上讀得到的文字，依畫面由上到下、由左到右的順序逐字轉錄；若畫面幾乎沒有文字（純視覺廣告），改用 1-2 句話客觀描述畫面內容（人物、場景、產品呈現方式），不要加上分析或評論
+- industry_tag：產業／領域（若使用者已提供提示「${industryHint || '無'}」，優先採用或修正它）
+- framework_tag：主要行銷框架（如 AIDA、PAS，或最貼近的描述）
+- block_breakdown：依畫面實際傳達內容拆解出的區塊順序，陣列，例如 ["hook","pain_agitate","solution","cta"]
+- pain_points：這則廣告鎖定的受眾痛點與洞察，1-4 組，這是整份分析「最重要」的部分，每組包含：
+  - surface_problem：表層問題（一句話，受眾自己意識得到的困擾）
+  - deep_desire：背後的深層渴望（一句話）
+  - why_targeted：這則廣告為什麼判斷「打這個痛點」對這個受眾有效——依畫面的視覺與文字訴求方式、產品定位、使用情境、氛圍等
+    脈絡合理推斷，寫 1-2 句具體原因，不要寫「因為很痛」這種空泛答案
+  - identity_appeal：受眾透過這個產品/服務想被看見、想成為的形象或身份認同（1-2 句，要具體）
+  - quote：畫面中最能代表這個痛點的文字片段（不超過 40 字）；若畫面沒有對應文字，可留空字串
+  即使畫面主要走品牌形象／情感訴求、沒有直接寫出「問題句」，也請根據視覺線索、承諾、使用情境、鎖定的生活場景等
+  合理反推受眾痛點與身份渴望，不要只因為沒有出現直白的問題描述就回傳空陣列；只有在畫面完全找不到任何
+  受眾線索（例如純規格條列、純法律聲明）時，才可以回傳空陣列。
+- emotion_tags：這則廣告訴諸的情緒，陣列，1-3 個（次要資訊，供參考即可）
+- angle_type：文案角度（fear／aspiration／logic 三選一，選最貼近的，次要資訊）
+
+輸出格式：{"transcript":"...","industry_tag":"...","framework_tag":"...","block_breakdown":["..."],"pain_points":[{"surface_problem":"...","deep_desire":"...","why_targeted":"...","identity_appeal":"...","quote":"..."}],"emotion_tags":["..."],"angle_type":"..."}`;
+
+  const img = normalizeImage(image);
+  const raw = await callVision({ system, prompt, images: [img], maxTokens: 1600 });
+  const classified = parseJSON(raw);
+  const extractedPainPoints = (Array.isArray(classified.pain_points) ? classified.pain_points : [])
+    .filter(p => p && p.surface_problem && p.deep_desire)
+    .map(p => ({
+      surface_problem: p.surface_problem,
+      deep_desire: p.deep_desire,
+      why_targeted: p.why_targeted || null,
+      identity_appeal: p.identity_appeal || null,
+      quote: p.quote || null,
+    }));
+
+  return {
+    raw_content: classified.transcript || '（圖片版廣告，畫面無可辨識文字）',
     industry_tag: classified.industry_tag,
     framework_tag: classified.framework_tag,
     emotion_tags: classified.emotion_tags || [],
@@ -201,19 +259,42 @@ async function handleFacets(req, res, user) {
   }
 }
 
+// 圖片版廣告匯入支援兩種模式（由前端讓使用者選擇，見 image_mode）：
+//   'ocr'    ：先 OCR 出畫面文字，再走跟純文字貼上完全相同的 analyzeSwipeCopy 流程。
+//              適合文字為主的截圖（例如純文字型廣告、長文案截圖），OCR 準確率高。
+//   'direct' ：略過 OCR，讓模型直接「看圖」分析（見 analyzeSwipeCopyFromImage）。
+//              適合視覺為主、文字很少或版面/圖像本身就是說服力來源的廣告創意。
 async function handleCreate(req, res, user) {
-  const { raw_content, source_url, industry_tag } = req.body || {};
-  if (!raw_content || !raw_content.trim()) return sendError(res, 400, '請貼上要分析的文案內容。');
+  const { raw_content, source_url, industry_tag, image, image_mode } = req.body || {};
 
   try {
-    const analysis = await analyzeSwipeCopy(raw_content, industry_tag);
+    let analysis;
+    let finalRawContent;
+
+    if (image) {
+      if (image_mode === 'direct') {
+        analysis = await analyzeSwipeCopyFromImage(image, industry_tag);
+        finalRawContent = analysis.raw_content;
+      } else {
+        const ocrText = await ocrImageToText(image);
+        if (!ocrText) {
+          return sendError(res, 400, '這張圖片沒有辨識出任何文字，若廣告以視覺呈現為主（文字很少），請改用「直接分析圖片」模式。');
+        }
+        analysis = await analyzeSwipeCopy(ocrText, industry_tag);
+        finalRawContent = ocrText;
+      }
+    } else {
+      if (!raw_content || !raw_content.trim()) return sendError(res, 400, '請貼上要分析的文案內容，或改為上傳廣告截圖。');
+      analysis = await analyzeSwipeCopy(raw_content, industry_tag);
+      finalRawContent = raw_content;
+    }
 
     const [saved] = await restRequest('swipe_copies', {
       method: 'POST',
       prefer: 'return=representation',
       body: {
         user_id: user.id,
-        raw_content,
+        raw_content: finalRawContent,
         source_url: source_url || null,
         industry_tag: analysis.industry_tag,
         framework_tag: analysis.framework_tag,
