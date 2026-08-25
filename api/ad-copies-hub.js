@@ -490,3 +490,7 @@ module.exports = async (req, res) => {
   if (req.method === 'POST') return handleCreate(req, res, user);
   return sendError(res, 405, '不支援的方法。');
 };
+
+// insight-reports-hub.js 會直接 require 這支檔案來重用同一份矩陣運算（純運算、不呼叫 AI），
+// 讓洞察報告能把「真實廣告成效」跟痛點清單兜在一起，而不用另外發一次 HTTP 請求打自己的 API。
+module.exports.buildMatrix = buildMatrix;
