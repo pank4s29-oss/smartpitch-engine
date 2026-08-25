@@ -157,3 +157,4 @@ function currentDisplayName() {
   // 讓其他腳本（app.js）可以 await 這個 promise，確保「登入狀態已確認完成」再打
   // 需要驗證身份的 API，避免網頁一載入就搶在驗證完成前呼叫、被誤判成未登入。
   window.authReady = initAuth();
+})();
