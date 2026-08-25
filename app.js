@@ -4,6 +4,40 @@ const status = $('#status') || (() => { const el = document.createElement('secti
 
 const esc = value => String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
 
+// ---------------- 圖片上傳共用小工具 ----------------
+// 語料匯入（截圖）與文案手法庫（廣告創意圖片）都需要「選圖 → 轉 base64 → 顯示縮圖預覽」，
+// 共用同一組小工具，避免兩處各寫一次幾乎一樣的 FileReader 邏輯。
+
+// 把 <input type="file"> 選到的單一檔案轉成 { data, media_type }，data 是純 base64（已去掉
+// data:image/...;base64, 前綴），直接對應後端 API 期待的格式。
+function fileToImagePayload(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const match = /^data:([^;]+);base64,([\s\S]*)$/.exec(reader.result || '');
+      if (!match) { reject(new Error(`圖片讀取失敗：${file.name}`)); return; }
+      resolve({ data: match[2], media_type: match[1] });
+    };
+    reader.onerror = () => reject(new Error(`圖片讀取失敗：${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+// 在指定容器內顯示選取檔案的縮圖，純視覺回饋，不影響送出時的實際資料（送出時一律重新讀檔）。
+function renderImagePreview(container, fileList) {
+  if (!container) return;
+  container.innerHTML = '';
+  Array.from(fileList || []).forEach(file => {
+    const img = document.createElement('img');
+    img.className = 'image-preview-thumb';
+    img.alt = file.name;
+    const reader = new FileReader();
+    reader.onload = () => { img.src = reader.result; };
+    reader.readAsDataURL(file);
+    container.appendChild(img);
+  });
+}
+
 // 產品/服務設定的顯示格式：以產品名稱為主，後面用斜線接領域，方便在下拉選單中一眼認出是哪個產品。
 // 舊資料若沒有 product_name（理論上不會發生，但保底），退回原本的 domain_tag／audience 格式。
 const profileLabel = p => (p && p.product_name) ? `${p.product_name}／${p.domain_tag}` : `${p.domain_tag}／${p.audience}`;
@@ -574,6 +608,67 @@ $('#extract-btn').onclick = async () => {
   } catch (err) { setStatus('⚠ ' + err.message, true); }
   finally { updateExtractBtn(); }
 };
+
+// ---------------- 語料圖片匯入（截圖 OCR） ----------------
+// 「僅轉出文字」模式：走跟批次文字匯入完全相同的後端流程（雜訊過濾/去重），只是文字
+// 來源是 OCR 而不是使用者貼上；「立即萃取痛點」模式在匯入成功後，直接拿匯入回傳的
+// 語料 id 呼叫既有的 /pain-points/extract（跟使用者手動勾選語料、按下「交由 AI 分析
+// 萃取痛點」按鈕是同一支 API），不重複實作一次萃取邏輯。
+const feedbackImageInput = $('#feedback-image-input');
+const feedbackImagePreview = $('#feedback-image-preview');
+const feedbackImageSubmitBtn = $('#feedback-image-submit');
+const feedbackImageStatus = $('#feedback-image-status');
+const feedbackImageMode = $('#feedback-image-mode');
+const FEEDBACK_IMAGE_MAX_COUNT = 8; // 需與 api/_lib/vision.js／raw-feedback-hub.js 的上限一致
+
+if (feedbackImageInput) {
+  feedbackImageInput.addEventListener('change', () => {
+    renderImagePreview(feedbackImagePreview, feedbackImageInput.files);
+    if (feedbackImageSubmitBtn) feedbackImageSubmitBtn.disabled = !feedbackImageInput.files.length;
+  });
+}
+
+if (feedbackImageSubmitBtn) {
+  feedbackImageSubmitBtn.onclick = async () => {
+    if (!currentProfileId) { feedbackImageStatus.textContent = '⚠ 請先選擇產品/服務設定。'; return; }
+    const files = Array.from((feedbackImageInput && feedbackImageInput.files) || []);
+    if (!files.length) return;
+    if (files.length > FEEDBACK_IMAGE_MAX_COUNT) {
+      feedbackImageStatus.textContent = `⚠ 單次最多上傳 ${FEEDBACK_IMAGE_MAX_COUNT} 張圖片，請分批上傳。`;
+      return;
+    }
+    feedbackImageSubmitBtn.disabled = true;
+    feedbackImageStatus.textContent = '正在辨識圖片文字…';
+    try {
+      const images = await Promise.all(files.map(fileToImagePayload));
+      const sourceType = $('#source-type-select') ? $('#source-type-select').value : undefined;
+      const result = await api('/api/raw-feedback', {
+        method: 'POST',
+        body: JSON.stringify({ domain_profile_id: currentProfileId, source_type: sourceType, images }),
+      });
+      feedbackImageStatus.textContent = result.message || `已匯入 ${result.imported} 則語料。`;
+      feedbackImageInput.value = '';
+      feedbackImagePreview.innerHTML = '';
+      await loadFeedback();
+
+      if (feedbackImageMode && feedbackImageMode.value === 'extract' && result.items && result.items.length) {
+        feedbackImageStatus.textContent += '　正在交由 AI 萃取痛點…';
+        const ids = result.items.map(it => it.id);
+        const extractResult = await api(`/api/domain-profiles/${currentProfileId}/pain-points/extract`, {
+          method: 'POST',
+          body: JSON.stringify({ feedback_ids: ids }),
+        });
+        feedbackImageStatus.textContent = extractResult.message
+          || `已從圖片語料萃取 ${(extractResult.pain_points || []).length} 筆有語料佐證的痛點。`;
+        await loadPainPoints();
+      }
+    } catch (err) {
+      feedbackImageStatus.textContent = '⚠ ' + err.message;
+    } finally {
+      feedbackImageSubmitBtn.disabled = !(feedbackImageInput && feedbackImageInput.files && feedbackImageInput.files.length);
+    }
+  };
+}
 
 // ---------------- 痛點清單 ----------------
 // 解決方案改為在「產品／服務設定」填一次、套用到底下所有痛點，
@@ -1267,6 +1362,59 @@ swipeForm.addEventListener('submit', async e => {
   finally { if (submitBtn) submitBtn.disabled = false; }
 });
 
+// ---------------- 廣告截圖／創意圖片上傳 ----------------
+// 'ocr'：後端先 OCR 出畫面文字，再走跟上面貼文字完全相同的分析流程（含自動萃取痛點）。
+// 'direct'：後端略過 OCR，讓模型直接看圖分析——適合視覺為主、文字很少的廣告創意，
+// 這種情況純 OCR 常常抓不到什麼有用的文字。兩種模式回傳的資料結構完全一致，
+// 這裡的成功處理邏輯直接沿用跟文字送出時相同的寫法。
+const swipeImageInput = $('#swipe-image-input');
+const swipeImagePreview = $('#swipe-image-preview');
+const swipeImageSubmitBtn = $('#swipe-image-submit');
+const swipeImageStatus = $('#swipe-image-status');
+const swipeImageMode = $('#swipe-image-mode');
+
+if (swipeImageInput) {
+  swipeImageInput.addEventListener('change', () => {
+    renderImagePreview(swipeImagePreview, swipeImageInput.files);
+    if (swipeImageSubmitBtn) swipeImageSubmitBtn.disabled = !swipeImageInput.files.length;
+  });
+}
+
+if (swipeImageSubmitBtn) {
+  swipeImageSubmitBtn.onclick = async () => {
+    const file = swipeImageInput && swipeImageInput.files && swipeImageInput.files[0];
+    if (!file) return;
+    swipeImageSubmitBtn.disabled = true;
+    swipeImageStatus.textContent = (swipeImageMode && swipeImageMode.value === 'direct')
+      ? '正在直接分析圖片內容…' : '正在辨識圖片文字並分析…';
+    try {
+      const payload = await fileToImagePayload(file);
+      const sourceUrlEl = $('#swipe-image-source-url');
+      const industryTagEl = $('#swipe-image-industry-tag');
+      const item = await api('/api/swipe-copies', {
+        method: 'POST',
+        body: JSON.stringify({
+          image: payload,
+          image_mode: (swipeImageMode && swipeImageMode.value) || 'ocr',
+          source_url: (sourceUrlEl && sourceUrlEl.value) || undefined,
+          industry_tag: (industryTagEl && industryTagEl.value) || undefined,
+        }),
+      });
+      const painCount = Array.isArray(item.extracted_pain_points) ? item.extracted_pain_points.length : 0;
+      swipeImageStatus.textContent = `已分類：${item.industry_tag}／${item.framework_tag}。萃取到 ${painCount} 組受眾痛點與身份洞察。`;
+      swipeImageInput.value = '';
+      swipeImagePreview.innerHTML = '';
+      if (sourceUrlEl) sourceUrlEl.value = '';
+      if (industryTagEl) industryTagEl.value = '';
+      loadSwipes();
+    } catch (err) {
+      swipeImageStatus.textContent = '⚠ ' + err.message;
+    } finally {
+      swipeImageSubmitBtn.disabled = !(swipeImageInput && swipeImageInput.files && swipeImageInput.files.length);
+    }
+  };
+}
+
 function swipeCardHtml(x) {
   const painPoints = Array.isArray(x.extracted_pain_points) ? x.extracted_pain_points : [];
   const insightHtml = painPoints.length
@@ -1840,105 +1988,9 @@ if (buildMatrixBtn) {
   };
 }
 
-// ---------------- 帳號角落元件（身份確認收合） ----------------
-// 顯示名稱／登入狀態完全由 auth.js 透過 'auth:change' 自訂事件廣播，這裡只負責
-// 收合面板的展開/收起，以及把事件內容顯示在角落的小標籤上，不用再靠猜測
-// #auth-status 文字內容或 MutationObserver 反推狀態。
-
-const cornerToggle = $('#account-corner-toggle');
-const cornerPanel = $('#account-corner-panel');
-if (cornerToggle && cornerPanel) {
-  cornerToggle.onclick = () => { cornerPanel.hidden = !cornerPanel.hidden; };
-  document.addEventListener('click', e => {
-    if (!cornerPanel.hidden && !e.target.closest('#account-corner')) cornerPanel.hidden = true;
-  });
-}
-
-// 記住最後一次 auth:change 廣播的內容，「帳號設定」modal 開啟時直接拿來預填，
-// 不用另外再問 auth.js 要一次目前的登入狀態。
-let latestAuthDetail = null;
-
-function updateCornerLabel(detail) {
-  latestAuthDetail = detail;
-  const cornerLabel = $('#account-corner-label');
-  const dot = document.querySelector('.account-corner-dot');
-  const settingsBtn = $('#account-settings-btn');
-  if (!cornerLabel) return;
-  if (!detail || !detail.loggedIn) {
-    cornerLabel.textContent = '尚未登入';
-    if (dot) dot.style.background = 'var(--muted, #9aa0a6)';
-    if (settingsBtn) settingsBtn.hidden = true;
-    return;
-  }
-  const label = detail.displayName || detail.email || '已登入';
-  cornerLabel.textContent = label.length > 14 ? label.slice(0, 14) + '…' : label;
-  if (dot) dot.style.background = '#2f7a3d';
-  if (settingsBtn) settingsBtn.hidden = false;
-}
-
-window.addEventListener('auth:change', e => {
-  updateCornerLabel(e.detail);
-  // 剛登入/註冊成功就自動收合面板，不用使用者自己再點一次關掉。
-  if (e.detail && e.detail.loggedIn && cornerPanel) cornerPanel.hidden = true;
-  // 登出後若帳號設定 modal 還開著，一併關掉，避免顯示已經失效的資料。
-  if (!e.detail || !e.detail.loggedIn) closeAccountSettings();
-});
-
-// ---------------- 帳號設定 modal ----------------
-// 獨立於登入面板之外：登入後才會在使用者名稱旁邊出現一顆「⚙」按鈕，點下去開啟這個
-// modal，專門用來看帳號資訊、修改顯示名稱，跟「登入/註冊」的表單分開，減少混淆。
-
-const accountSettingsBtn = $('#account-settings-btn');
-const accountSettingsOverlay = $('#account-settings-overlay');
-const accountSettingsNameInput = $('#account-settings-name-input');
-const accountSettingsEmailEl = $('#account-settings-email');
-const accountSettingsSaveBtn = $('#account-settings-save');
-const accountSettingsCloseBtn = $('#account-settings-close');
-const accountSettingsSignoutBtn = $('#account-settings-signout');
-
-function openAccountSettings() {
-  if (!accountSettingsOverlay) return;
-  if (cornerPanel) cornerPanel.hidden = true;
-  if (accountSettingsEmailEl) {
-    accountSettingsEmailEl.textContent = latestAuthDetail && latestAuthDetail.email
-      ? `登入信箱：${latestAuthDetail.email}` : '';
-  }
-  if (accountSettingsNameInput) accountSettingsNameInput.value = (latestAuthDetail && latestAuthDetail.displayName) || '';
-  accountSettingsOverlay.hidden = false;
-}
-function closeAccountSettings() {
-  if (accountSettingsOverlay) accountSettingsOverlay.hidden = true;
-}
-
-if (accountSettingsBtn) accountSettingsBtn.onclick = openAccountSettings;
-if (accountSettingsCloseBtn) accountSettingsCloseBtn.onclick = closeAccountSettings;
-if (accountSettingsOverlay) {
-  accountSettingsOverlay.addEventListener('click', e => { if (e.target === accountSettingsOverlay) closeAccountSettings(); });
-}
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && accountSettingsOverlay && !accountSettingsOverlay.hidden) closeAccountSettings();
-});
-
-if (accountSettingsSaveBtn) {
-  accountSettingsSaveBtn.onclick = async () => {
-    const name = (accountSettingsNameInput.value || '').trim();
-    if (!name) { setStatus('⚠ 請輸入顯示名稱。', true); return; }
-    accountSettingsSaveBtn.disabled = true;
-    try {
-      await window.updateDisplayName(name);
-      setStatus('已更新顯示名稱。');
-    } catch (err) { setStatus('⚠ ' + err.message, true); }
-    finally { accountSettingsSaveBtn.disabled = false; }
-  };
-}
-if (accountSettingsSignoutBtn) {
-  accountSettingsSignoutBtn.onclick = async () => {
-    accountSettingsSignoutBtn.disabled = true;
-    try { await window.signOut(); closeAccountSettings(); }
-    catch (err) { setStatus('⚠ ' + err.message, true); }
-    finally { accountSettingsSignoutBtn.disabled = false; }
-  };
-}
+// 帳號角落元件（身份確認收合）與帳號設定 modal 已搬到獨立的 account-corner.js
+// （比 app.js 更早載入），避免這支檔案裡任何不相關的錯誤把角落的登入狀態顯示拖垮。
+// 詳見 account-corner.js 開頭的說明註解。
 
 // ---------------- 初始化 ----------------
 
