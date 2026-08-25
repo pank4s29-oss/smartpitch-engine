@@ -295,6 +295,23 @@ details.csv-import[open] summary { margin-bottom: 4px; }
 .csv-preview { margin-top: 10px; }
 .csv-preview .feedback-item { background: var(--paper); }
 
+/* ---------- 圖片／截圖上傳（語料匯入、文案手法庫共用） ---------- */
+#feedback-image-input, #swipe-image-input { margin: 10px 0; }
+.image-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+.image-preview-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+}
+
 /* ---------- 語料項目 ---------- */
 
 .feedback-item {
