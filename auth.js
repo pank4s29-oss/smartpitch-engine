@@ -23,6 +23,19 @@
     client = supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
     const { data: { session: s } } = await client.auth.getSession();
     session = s;
+
+    // 修正：先前只用 getSession() 拿本機快取的 session，若顯示名稱是在其他分頁／裝置
+    // 更新過，這裡快取到的 user_metadata 可能是舊的，導致角落按鈕顯示錯誤的名稱
+    // （或該顯示名稱時卻顯示 Email）。這裡額外用 getUser() 跟 Supabase 伺服器核對一次，
+    // 拿到當下真正最新的 user_metadata 後才渲染，讀不到（例如 token 過期）就靜默略過，
+    // 交由後續的登入流程或 API 呼叫處理，不擋住頁面初始化。
+    if (session) {
+      try {
+        const { data: { user: freshUser } } = await client.auth.getUser();
+        if (freshUser) session = { ...session, user: freshUser };
+      } catch (_) { /* 忽略，沿用 getSession() 的結果 */ }
+    }
+
     client.auth.onAuthStateChange((_event, s) => { session = s; renderAuthUI(); });
     renderAuthUI();
     wireAuthForm();
@@ -40,8 +53,6 @@
     const signOutBtn = document.querySelector('#auth-signout');
     const signInBtn = document.querySelector('#auth-signin');
     const signUpBtn = document.querySelector('#auth-signup');
-    const updateNameBtn = document.querySelector('#auth-update-name');
-    const displayNameInput = document.querySelector('#auth-form input[name=display_name]');
     const composer = document.querySelector('#composer-panel');
     const loggedIn = !!session;
     const displayName = currentDisplayName();
@@ -52,19 +63,13 @@
     signOutBtn.hidden = !loggedIn;
     signInBtn.hidden = loggedIn;
     signUpBtn.hidden = loggedIn;
-    if (updateNameBtn) updateNameBtn.hidden = !loggedIn;
     document.querySelector('#auth-form input[name=email]').closest('label').style.display = loggedIn ? 'none' : '';
     document.querySelector('#auth-form input[name=password]').closest('label').style.display = loggedIn ? 'none' : '';
-
-    // 顯示名稱欄位不像 email／密碼那樣登入後就隱藏——登入後要能繼續看到、繼續編輯，
-    // 所以只在使用者沒有正在打字（focus 在這個欄位）的情況下才覆蓋它的值，避免使用者
-    // 正在輸入時被 onAuthStateChange 觸發的重新渲染打斷。
-    if (displayNameInput && document.activeElement !== displayNameInput) {
-      displayNameInput.value = displayName || '';
-    }
-    if (displayNameInput) {
-      displayNameInput.placeholder = loggedIn ? '未設定則顯示 Email' : '例如：小明（選填，註冊時可直接設定）';
-    }
+    // 顯示名稱欄位現在只用在「註冊當下順便設定」，登入後要修改請用右上角使用者名稱
+    // 旁邊的「帳號設定」按鍵，不再讓這個欄位同時扮演兩種用途，避免使用者搞不清楚
+    // 現在改的是哪一個。
+    const displayNameLabel = document.querySelector('#auth-form input[name=display_name]').closest('label');
+    if (displayNameLabel) displayNameLabel.style.display = loggedIn ? 'none' : '';
 
     // 未登入時鎖住整個文案工作台，避免呼叫 API 直接被 RLS 擋下來
     composer.querySelectorAll('input, textarea, select, button').forEach(el => { el.disabled = !loggedIn; });
@@ -104,27 +109,6 @@
     document.querySelector('#auth-signout').addEventListener('click', async () => {
       await client.auth.signOut();
     });
-
-    // 登入後隨時可以修改顯示名稱，不是只有註冊當下才能設定一次。
-    const updateNameBtn = document.querySelector('#auth-update-name');
-    if (updateNameBtn) {
-      updateNameBtn.addEventListener('click', async () => {
-        const name = (displayNameInput.value || '').trim();
-        if (!name) { status.textContent = '⚠ 請輸入顯示名稱。'; return; }
-        updateNameBtn.disabled = true;
-        status.textContent = '正在更新顯示名稱…';
-        const { data, error } = await client.auth.updateUser({ data: { display_name: name } });
-        if (error) {
-          status.textContent = '⚠ ' + error.message;
-        } else {
-          session = data.session || session;
-          if (session && session.user) session.user.user_metadata = { ...session.user.user_metadata, display_name: name };
-          status.textContent = '已更新顯示名稱。';
-          renderAuthUI();
-        }
-        updateNameBtn.disabled = false;
-      });
-    }
   }
 
   // app.js 透過這個函式取得目前登入者的 JWT，附加在每次 /api/* 呼叫的 Authorization 標頭。
@@ -133,6 +117,25 @@
     const { data: { session: fresh } } = await client.auth.getSession();
     session = fresh;
     return fresh ? fresh.access_token : null;
+  };
+
+  // 供「帳號設定」modal 使用：更新顯示名稱。修正舊版的錯誤寫法——Supabase JS v2 的
+  // updateUser() 回傳的是 { data: { user } }，並沒有 data.session 這個欄位，先前寫
+  // `session = data.session || session` 永遠會落回舊的 session、等於沒真的更新，只能
+  // 靠後面手動貼上去的那行 patch 勉強頂著。這裡改成直接採用 updateUser() 回傳的最新
+  // user 物件，並整個換掉 session.user，資料來源正確、不用再手動拼湊。
+  window.updateDisplayName = async function (name) {
+    if (!client || !session) throw new Error('請先登入。');
+    const { data, error } = await client.auth.updateUser({ data: { display_name: name } });
+    if (error) throw new Error(error.message);
+    if (data && data.user) session = { ...session, user: data.user };
+    renderAuthUI();
+  };
+
+  // 供「帳號設定」modal 的登出按鈕使用，不用重複寫一次 client.auth.signOut()。
+  window.signOut = async function () {
+    if (!client) return;
+    await client.auth.signOut();
   };
 
   // 讓其他腳本（app.js）可以 await 這個 promise，確保「登入狀態已確認完成」再打
