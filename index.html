@@ -130,6 +130,18 @@
 <p class="muted" style="margin:10px 0 12px">或上傳 CSV 檔案：請先在上方選擇語料來源分類，系統會讀取表頭欄位，讓你指定哪一欄是語料內容，日期與評分則為選填；其餘欄位會整批存成補充資訊，供之後分析使用。</p>
 <input type="file" id="csv-file-input" accept=".csv,text/csv">
 <div id="csv-mapping-panel"></div>
+<hr class="divider">
+<p class="muted" style="margin:10px 0 12px">或上傳截圖／圖片（例如顧客評論、社群留言、客服對話的截圖），AI 會自動辨識畫面中的文字，單次最多 8 張。</p>
+<label>圖片處理方式
+<select id="feedback-image-mode">
+<option value="ocr">僅轉出文字並加入語料庫（之後再手動勾選交由 AI 分析）</option>
+<option value="extract">轉出文字後，立即交由 AI 萃取痛點</option>
+</select>
+</label>
+<input type="file" id="feedback-image-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple>
+<div id="feedback-image-preview" class="image-preview-row"></div>
+<button type="button" id="feedback-image-submit" class="secondary" disabled>匯入圖片語料</button>
+<p id="feedback-image-status" class="muted" style="margin-top:8px"></p>
 </details>
 <div id="feedback-list"><p class="muted">尚無已匯入的語料。</p></div>
 <button type="button" id="extract-btn" class="secondary" disabled>對已勾選的語料，交由 AI 分析萃取痛點 →</button>
@@ -266,6 +278,22 @@
 </form>
 <div id="swipe-status" style="margin-top:10px"></div>
 <hr class="divider">
+<p class="muted" style="margin-bottom:14px">或上傳廣告截圖／創意圖片，AI 會自動分析框架、手法與鎖定的受眾痛點。</p>
+<div class="grid">
+<label>來源連結（選填）<input id="swipe-image-source-url" placeholder="https://…"></label>
+<label>產業提示（選填）<input id="swipe-image-industry-tag" placeholder="例：健身"></label>
+</div>
+<label>分析方式
+<select id="swipe-image-mode">
+<option value="ocr">先辨識文字，再依文字分析（適合文字為主的截圖）</option>
+<option value="direct">直接分析圖片內容（適合圖像為主、文字很少的廣告創意）</option>
+</select>
+</label>
+<input type="file" id="swipe-image-input" accept="image/png,image/jpeg,image/webp,image/gif">
+<div id="swipe-image-preview" class="image-preview-row"></div>
+<button type="button" id="swipe-image-submit" class="secondary" disabled>上傳並分析圖片</button>
+<p id="swipe-image-status" class="muted" style="margin-top:8px"></p>
+<hr class="divider">
 <div id="swipe-filter-bar" class="filter-bar">
 <input type="text" id="swipe-filter-q" placeholder="搜尋文案內容關鍵字…">
 <select id="swipe-filter-industry"><option value="">全部產業／領域</option></select>
@@ -372,5 +400,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="/auth.js"></script>
+<script src="/account-corner.js"></script>
 <script src="/app.js"></script>
 </body></html>
