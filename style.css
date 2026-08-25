@@ -315,14 +315,17 @@ details.csv-import[open] summary { margin-bottom: 4px; }
 /* ---------- 語料項目 ---------- */
 
 .feedback-item {
-  display: flex; gap: 10px; align-items: flex-start;
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start;
   border: 1px solid var(--line); border-radius: var(--radius);
   padding: 10px 12px; margin-bottom: 8px; background: #fff; font-size: 13.5px;
 }
 .feedback-item input[type=checkbox] { margin-top: 3px; width: auto; }
 .feedback-item .source-tag { font-family: var(--font-mono); font-size: 10.5px; color: var(--teal); text-transform: uppercase; }
 .feedback-item .fb-text { flex: 1; color: var(--ink); }
-.feedback-item .fb-delete { background: none; border: none; color: var(--ink-soft); cursor: pointer; padding: 2px; }
+.feedback-item .fb-actions { display: flex; gap: 2px; flex: none; }
+.feedback-item .fb-edit, .feedback-item .fb-delete { background: none; border: none; color: var(--ink-soft); cursor: pointer; padding: 2px 4px; }
+.feedback-item .fb-edit:hover, .feedback-item .fb-delete:hover { color: var(--ink); }
+.feedback-item .fb-edit-form { flex-basis: 100%; }
 
 /* ---------- 報告 ---------- */
 
@@ -479,11 +482,14 @@ details.panel[open] summary { margin-bottom: 16px; }
 /* ---------- 重複偵測提示 / 一般 confirm 對話樣式沿用瀏覽器原生 ---------- */
 
 @media print {
-  header, #auth-panel, #status, #composer-panel > .panel, #profile-scope > .panel:not(.report-panel-print-target),
-  details.swipe, #report-library-panel, .step-actions, .r-sort, .sort-label, #report-history, button { display: none !important; }
+  /* #composer-panel／#profile-scope 是改版前的舊容器 id，現在已經不存在，這裡
+     順帶換成目前實際的版面元素（.sidebar／.topbar），否則列印報告時側邊欄跟
+     頂欄會一起印出來。 */
+  .sidebar, .topbar, header, #auth-panel, #status, details.swipe,
+  #report-library-panel, .step-actions, .r-sort, .sort-label, #report-history, button { display: none !important; }
   .report-panel { box-shadow: none; border: none; padding: 0; }
   body { background: #fff; }
-  main { max-width: 100%; padding: 0; }
+  .page-container, main { max-width: 100%; padding: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -548,15 +554,15 @@ details.meta-sync > summary {
 
 /* ============================================================================
  * 帳號角落元件（身份確認收合）
+ * 改版重點：原本用 position:fixed 把整塊釘在畫面右上角，跟頂欄排版是兩件事，
+ * 縮放視窗或跟 sidebar-toggle／頁面標題並排時很容易互相蓋到。現在 #account-corner
+ * 是 .topbar 裡的一般 flex 子項目（margin-left:auto 把它推到最右邊），下拉面板
+ * 用 position:absolute 錨定在按鈕正下方，不再脫離文件排版邏輯。
  * ============================================================================ */
 #account-corner {
-  position: fixed;
-  top: 14px;
-  right: 14px;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
+  position: relative;
+  margin-left: auto;
+  flex: none;
 }
 .account-corner-bar {
   display: flex;
@@ -565,15 +571,21 @@ details.meta-sync > summary {
 }
 #account-settings-btn {
   border-radius: 999px;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  background: none;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-soft);
+}
+#account-settings-btn:hover {
+  border-color: var(--teal);
+  color: var(--teal);
 }
 /* 修正：上面 display:flex 這種「作者樣式」的優先權天生就贏過瀏覽器內建的
    [hidden]{display:none}，不管選擇器優先度高低都一樣，所以只設定
@@ -585,34 +597,61 @@ details.meta-sync > summary {
 #account-corner-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: 8px;
+  padding: 5px 14px 5px 6px;
   border-radius: 999px;
-  border: 1px solid var(--border, #d8dbe0);
-  background: var(--bg, #fff);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
   font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   max-width: 220px;
+}
+#account-corner-toggle:hover {
+  border-color: var(--line-strong);
+}
+.account-avatar {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--teal);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.account-corner-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted, #9aa0a6);
+  border: 2px solid var(--paper);
+  flex: none;
 }
 #account-corner-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.account-corner-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted, #9aa0a6);
-  flex: none;
+.account-corner-chevron {
+  color: var(--ink-soft);
+  font-size: 11px;
 }
 #account-corner-panel {
-  margin-top: 8px;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
   width: min(360px, calc(100vw - 28px));
 }
 #account-corner-panel #auth-panel {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  box-shadow: 0 8px 24px rgba(24, 38, 32, 0.16);
 }
 #auth-form input[name="display_name"] {
   min-width: 0;
@@ -640,7 +679,7 @@ details.meta-sync > summary {
 }
 #account-settings-dialog {
   width: min(420px, 100%);
-  background: var(--bg, #fff);
+  background: var(--paper-raised);
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
@@ -691,3 +730,188 @@ details.meta-sync > summary {
   gap: 6px;
   flex: none;
 }
+/* ============================================================================
+ * App Shell：左側功能列表 ＋ 右側頁面內容
+ * 對應改版後的 index.html：.app-shell 底下是 .sidebar（固定寬度導航列）與
+ * .app-main（.topbar ＋ .page-container，裡面放各個 .page 區塊，一次只顯示一頁）。
+ * ============================================================================ */
+.app-shell {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+
+/* ---------- 側邊欄 ---------- */
+.sidebar {
+  width: 252px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-raised);
+  border-right: 1px solid var(--line);
+  padding: 22px 14px;
+  overflow-y: auto;
+  transition: width 0.18s ease;
+}
+.sidebar-brand { padding: 2px 10px 20px; }
+.sidebar-brand .eyebrow { margin-bottom: 6px; }
+.sidebar-title { font-size: 18px; line-height: 1.3; }
+
+.sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
+.sidebar-divider { border: none; border-top: 1px solid var(--line); margin: 10px 8px; }
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--ink-soft);
+  font-weight: 500;
+  font-size: 13.5px;
+  padding: 9px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.nav-item:hover { background: var(--paper); color: var(--ink); }
+.nav-item.active { background: var(--teal); border-color: var(--teal); color: #fff; }
+
+.nav-item-icon {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-soft);
+}
+.nav-item.active .nav-item-icon { border-color: rgba(255, 255, 255, 0.6); color: #fff; }
+
+/* 需要先選好一組產品／服務設定才有內容可看的頁面（語料／受眾地圖／報告／廣告效益），
+   目前還沒選的時候淡化＋加上提示，不擋點擊（頁面內本身也有對應提示與空狀態）。 */
+.nav-item.nav-locked { opacity: 0.55; }
+.nav-item.nav-locked::after {
+  content: '需先選設定';
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+.nav-item.nav-locked.active::after { color: rgba(255, 255, 255, 0.85); }
+
+/* 桌機收合：縮成僅顯示圖示的窄列 */
+.app-shell.sidebar-collapsed .sidebar { width: 60px; padding-left: 8px; padding-right: 8px; }
+.app-shell.sidebar-collapsed .sidebar-brand,
+.app-shell.sidebar-collapsed .nav-item span:not(.nav-item-icon) { display: none; }
+.app-shell.sidebar-collapsed .nav-item { justify-content: center; }
+.app-shell.sidebar-collapsed .sidebar-divider { margin: 10px 2px; }
+
+/* ---------- 右側主要內容 ---------- */
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 28px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-raised);
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+.topbar-title { font-family: var(--font-display); font-size: 19px; font-weight: 600; margin: 0; }
+.sidebar-toggle-btn { flex: none; }
+
+.page-container {
+  max-width: 880px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 32px 24px 96px;
+}
+
+/* 一次只顯示一頁，切換由 nav.js 的 goToPage() 控制 .active class */
+.page { display: none; }
+.page.active { display: block; }
+
+/* ---------- 需要先選擇產品／服務設定的頁面 ---------- */
+.profile-required-hint { display: none; }
+body.no-profile-selected .requires-profile { display: none; }
+body.no-profile-selected .profile-required-hint { display: block; margin-bottom: 16px; }
+
+/* ---------- 手機版：側邊欄改為可收合的覆蓋層 ---------- */
+@media (max-width: 900px) {
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 75;
+    width: 264px;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    box-shadow: 4px 0 18px rgba(24, 38, 32, 0.18);
+  }
+  .app-shell:not(.sidebar-collapsed) .sidebar { transform: translateX(0); }
+  .app-shell:not(.sidebar-collapsed)::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: rgba(24, 38, 32, 0.32);
+    z-index: 70;
+  }
+  .topbar { padding: 12px 16px; }
+  .page-container { padding: 20px 16px 80px; }
+}
+
+/* ============================================================================
+ * 總覽頁（Dashboard）：跨產品／服務設定的統計卡片＋各設定摘要卡
+ * ============================================================================ */
+.dashboard-stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  margin-bottom: 24px;
+}
+.dashboard-stat-card {
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: var(--shadow-card);
+  padding: 16px 18px;
+}
+.dashboard-stat-card .num { display: block; font-size: 25px; font-weight: 600; color: var(--teal-dark); }
+.dashboard-stat-card small { color: var(--ink-soft); font-size: 12px; }
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+.dashboard-card {
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: var(--shadow-card);
+  padding: 18px 20px;
+}
+.dashboard-card-head h3 { font-size: 16px; }
+.dashboard-card-head .muted { margin-top: 4px; }
+.dashboard-card-stats {
+  display: flex;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 14px 0;
+  border-top: 1px dashed var(--line-strong);
+  border-bottom: 1px dashed var(--line-strong);
+}
+.dashboard-card-stats .dashboard-stat { flex: 1; text-align: center; }
+.dashboard-card-stats .num { display: block; font-size: 17px; font-weight: 600; color: var(--evidence); }
+.dashboard-card-stats small { color: var(--ink-soft); font-size: 10.5px; line-height: 1.3; display: block; margin-top: 2px; }
+.dashboard-card-updated { margin-bottom: 12px; font-size: 12.5px; }
