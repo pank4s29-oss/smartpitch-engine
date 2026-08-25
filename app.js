@@ -345,21 +345,76 @@ function updateExtractBtn() {
   btn.textContent = checked ? `對已勾選的 ${checked} 則語料開始分析 →` : '對已勾選的語料開始分析 →';
 }
 
+// 語料匯入與痛點紀錄合併成一個動作：新增一則語料的同時，一定要一併填寫這則語料
+// 對應的痛點（表層問題／深層渴望），送出後依序打兩支 API——先建立語料，成功後拿到
+// 剛建立那筆語料的 id，當成這筆痛點的 evidence_source 一起送出，讓手動輸入的痛點
+// 也能像 AI 萃取的痛點一樣有語料佐證可以統計，而不是「佐證 0 則」。
+// 若這則語料因為雜訊或重複被過濾掉（imported 為 0），就不建立痛點，把過濾原因
+// 顯示出來讓使用者調整內容後重新送出，避免出現一筆沒有真實語料佐證、卻標成
+// 「使用者輸入」的孤立痛點。
 $('#feedback-form').addEventListener('submit', async e => {
   e.preventDefault();
-  const data = Object.fromEntries(new FormData(e.target));
-  const raw_texts = data.raw_texts.split(/\n\s*\n/).map(t => t.trim()).filter(Boolean);
-  if (!raw_texts.length) return setStatus('⚠ 請貼上至少一則語料內容。', true);
+  const form = e.target;
+  const data = Object.fromEntries(new FormData(form));
+  const raw_text = (data.raw_text || '').trim();
+  const surface_problem = (data.surface_problem || '').trim();
+  const deep_desire = (data.deep_desire || '').trim();
+  if (!raw_text) return setStatus('⚠ 請貼上語料內容。', true);
+  if (!surface_problem || !deep_desire) return setStatus('⚠ 請同時填寫這則語料對應的表層問題與深層渴望。', true);
+
+  const btn = form.querySelector('button[type="submit"]');
+  if (btn) btn.disabled = true;
+  setStatus('正在新增語料並記錄對應痛點…');
   try {
-    const result = await api('/api/raw-feedback', {
+    const fbResult = await api('/api/raw-feedback', {
       method: 'POST',
-      body: JSON.stringify({ domain_profile_id: currentProfileId, source_type: data.source_type, raw_texts }),
+      body: JSON.stringify({ domain_profile_id: currentProfileId, source_type: data.source_type, raw_text }),
     });
-    setStatus(`已匯入 ${result.imported} 則語料。`);
-    e.target.reset();
+    if (!fbResult.imported || !Array.isArray(fbResult.items) || !fbResult.items.length) {
+      setStatus('⚠ ' + (fbResult.message || '這則語料未能匯入（可能是雜訊或與既有語料重複），因此未建立對應痛點，請調整內容後再試一次。'), true);
+      return;
+    }
+    const item = fbResult.items[0];
+    await api(`/api/domain-profiles/${currentProfileId}/pain-points`, {
+      method: 'POST',
+      body: JSON.stringify({
+        surface_problem, deep_desire, detail: data.detail || '',
+        source: 'user_input',
+        evidence_source: [{ raw_customer_feedback_id: item.id, quote: item.raw_text }],
+      }),
+    });
+    setStatus('已新增語料並記錄對應痛點。');
+    form.reset();
     await loadFeedback();
+    await loadPainPoints();
   } catch (err) { setStatus('⚠ ' + err.message, true); }
+  finally { if (btn) btn.disabled = false; }
 });
+
+// 進階：批次匯入語料。不強制逐筆對應痛點——匯入後可在下方語料清單勾選，交由 AI
+// 分析萃取，或之後再回來手動補上，適合一次貼很多則或整批匯出的素材。
+const batchFeedbackForm = $('#batch-feedback-form');
+if (batchFeedbackForm) {
+  batchFeedbackForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target));
+    const raw_texts = (data.raw_texts || '').split(/\n\s*\n/).map(t => t.trim()).filter(Boolean);
+    if (!raw_texts.length) return setStatus('⚠ 請貼上至少一則語料內容。', true);
+    const btn = e.target.querySelector('button[type="submit"]');
+    if (btn) btn.disabled = true;
+    try {
+      const sourceType = $('#source-type-select') ? $('#source-type-select').value : undefined;
+      const result = await api('/api/raw-feedback', {
+        method: 'POST',
+        body: JSON.stringify({ domain_profile_id: currentProfileId, source_type: sourceType, raw_texts }),
+      });
+      setStatus(`已批次匯入 ${result.imported} 則語料，可在下方勾選後交由 AI 分析萃取痛點。`);
+      e.target.reset();
+      await loadFeedback();
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { if (btn) btn.disabled = false; }
+  });
+}
 
 // ---------------- CSV / 檔案匯入 ----------------
 // 讓「日常素材」不用先手動整理成一則一則貼上的文字——顧客評論匯出檔、問卷回覆、
@@ -994,6 +1049,13 @@ function sortReportPainPoints(points, sortKey) {
       return copy.sort((a, b) => (REVIEW_STATUS_ORDER[a.review_status] ?? 1) - (REVIEW_STATUS_ORDER[b.review_status] ?? 1));
     case 'evidence_desc':
       return copy.sort((a, b) => (b.evidence_count || 0) - (a.evidence_count || 0));
+    case 'ad_ctr_desc':
+      // 沒有真實廣告成效資料的痛點排到最後，而不是被當成 0 排到有資料的前面。
+      return copy.sort((a, b) => {
+        const aCtr = a.ad_performance && a.ad_performance.weighted_ctr != null ? a.ad_performance.weighted_ctr : -1;
+        const bCtr = b.ad_performance && b.ad_performance.weighted_ctr != null ? b.ad_performance.weighted_ctr : -1;
+        return bCtr - aCtr;
+      });
     case 'confidence_desc':
     default:
       return copy.sort((a, b) => (b.confidence_score ?? -1) - (a.confidence_score ?? -1));
@@ -1039,6 +1101,26 @@ function renderReportBreakdown(container, points, sortKey) {
       solEl.innerHTML = '<span class="no-solution">尚未配對解決方案</span>';
     }
 
+    // 真實廣告成效：跟 Meta 廣告後台不一樣的地方就在這裡——這一列數據不是某支廣告
+    // 單獨的表現，而是「這個受眾痛點」本身，用真實花費數據換算出來的成效。metricSpan
+    // 跟廣告文案卡片／效益驗證矩陣共用同一份白話定義，同一個指標到處看起來都一樣。
+    const adPerfEl = node.querySelector('.rr-ad-performance');
+    if (adPerfEl) {
+      const ad = p.ad_performance;
+      if (ad) {
+        adPerfEl.innerHTML = `<div class="pain-meta ad-performance-meta">
+          <span class="label-chip" style="cursor:default">真實廣告成效已驗證</span>
+          ${metricSpan('ctr', pctLabel(ad.weighted_ctr))}
+          ${metricSpan('cpa', ad.weighted_cpa ?? '—')}
+          ${metricSpan('cvr', pctLabel(ad.weighted_cvr))}
+          ${ad.weighted_roas != null ? metricSpan('roas', ad.weighted_roas) : ''}
+          <span title="依 ${ad.sample_size} 則已回灌成效的廣告文案換算${ad.low_confidence ? '，樣本數過少僅供初步參考' : ''}">樣本 <span class="num">${ad.sample_size}</span> 則廣告</span>
+        </div>`;
+      } else {
+        adPerfEl.innerHTML = '<p class="muted" style="margin-top:8px">尚無對應的真實廣告成效數據，目前僅有語料佐證。</p>';
+      }
+    }
+
     container.append(node);
   });
 }
@@ -1069,6 +1151,7 @@ function renderReport(report, meta) {
     ['已駁回', c.rejected, false],
     ['已配對解決方案', c.with_matched_solution, false],
     ['平均置信度', c.avg_confidence_score != null ? Math.round(c.avg_confidence_score * 100) + '%' : '—', false],
+    ['已有真實廣告成效驗證', c.with_ad_performance ?? 0, false],
   ];
 
   const statGrid = node.querySelector('.r-stats');
@@ -1086,6 +1169,18 @@ function renderReport(report, meta) {
       el.className = 'risk-flag';
       el.textContent = f;
       risksEl.append(el);
+    });
+  }
+
+  // 廣告成效亮點：這是跟 Meta 後台拉開差異的地方——不只顯示語料佐證程度，
+  // 直接把「真實廣告成效驗證過的痛點」標出來，跟風險提示分開放，避免混成一長串警示。
+  const adHighlightsEl = node.querySelector('.r-ad-highlights');
+  if (adHighlightsEl && report.ad_performance_highlights && report.ad_performance_highlights.length) {
+    report.ad_performance_highlights.forEach(h => {
+      const el = document.createElement('div');
+      el.className = 'risk-flag ad-highlight';
+      el.textContent = h;
+      adHighlightsEl.append(el);
     });
   }
 
@@ -1442,6 +1537,23 @@ async function loadAdCopies() {
 
 function pctLabel(v) { return v != null ? (Math.round(v * 10000) / 100) + '%' : '—'; }
 
+// ── 成效指標的白話說明 ──────────────────────────────────────────────────
+// CTR／CPA／CVR／ROAS 是廣告投放圈的行話，不是每個使用者一看就懂。這裡統一在縮寫
+// 前面加上白話說明當作主要標籤，縮寫放在括號裡當補充，滑鼠移上去（title）還有更
+// 完整的一句話解釋，兩個地方（廣告文案卡片、效益驗證矩陣）共用同一份定義，才不會
+// 兩處措辭不一致。
+const METRIC_INFO = {
+  ctr: { label: '點閱率', hint: '每 100 次曝光有幾次被點擊，數字越高代表廣告內容越吸引人點進去看。' },
+  cpa: { label: '單次轉換成本', hint: '平均每達成一次轉換（例如一筆訂單）要花多少廣告費，數字越低越划算。' },
+  cvr: { label: '轉換率', hint: '點進廣告的人裡面，有多少比例最後真的完成轉換，數字越高代表文案／頁面越有說服力。' },
+  roas: { label: '廣告投報率', hint: '每花 1 元廣告費賺回幾元，數字大於 1 代表這則廣告是賺錢的。' },
+};
+function metricSpan(key, valueHtml, prefix) {
+  const info = METRIC_INFO[key];
+  const label = (prefix || '') + info.label;
+  return `<span title="${esc(info.hint)}">${esc(label)}（${key.toUpperCase()}） <span class="num">${valueHtml}</span></span>`;
+}
+
 function adCopyTagsHtml(tags) {
   if (!tags) return '<p class="muted" style="margin-top:8px">AI 標籤化進行中或尚未完成，稍後重新整理清單查看。</p>';
   const secondary = (tags.secondary_pain_tags || []).map(t => `<span class="label-chip" style="cursor:default">${esc(t)}</span>`).join('');
@@ -1461,10 +1573,10 @@ function adCopyPerfHtml(perf) {
     <span>花費 <span class="num">${perf.spend ?? '—'}</span></span>
     <span>曝光 <span class="num">${perf.impressions ?? '—'}</span></span>
     <span>點擊 <span class="num">${perf.clicks ?? '—'}</span></span>
-    <span>CTR <span class="num">${pctLabel(perf.ctr)}</span></span>
-    <span>CPA <span class="num">${perf.cpa ?? '—'}</span></span>
-    <span>CVR <span class="num">${pctLabel(perf.cvr)}</span></span>
-    ${perf.roas != null ? `<span>ROAS <span class="num">${perf.roas}</span></span>` : ''}
+    ${metricSpan('ctr', pctLabel(perf.ctr))}
+    ${metricSpan('cpa', perf.cpa ?? '—')}
+    ${metricSpan('cvr', pctLabel(perf.cvr))}
+    ${perf.roas != null ? metricSpan('roas', perf.roas) : ''}
   </div>`;
 }
 
@@ -1512,10 +1624,14 @@ if (adCopyForm) {
     e.preventDefault();
     if (!currentProfileId) return;
     const data = Object.fromEntries(new FormData(e.target));
+    // 投放版位改成可複選的 checkbox，FormData 的 fromEntries 對同名欄位只會留下最後一個值，
+    // 所以要另外把所有勾選的 checkbox 收集起來，合併成逗號分隔的字串存進既有的 platform 欄位
+    // （後端 schema 沒有改動，這裡不需要動 API）。
+    const platforms = Array.from(e.target.querySelectorAll('input[name="platform"]:checked')).map(el => el.value);
     const hasPerf = data.spend || data.impressions || data.clicks || data.conversions;
     const body = {
       domain_profile_id: currentProfileId,
-      platform: data.platform,
+      platform: platforms.length ? platforms.join(',') : undefined,
       raw_content: data.raw_content,
       performance: hasPerf ? {
         spend: data.spend || undefined, impressions: data.impressions || undefined,
@@ -1677,10 +1793,10 @@ function matrixRowHtml(title, subtitle, row) {
     </div>
     <div class="confidence-bar"><div class="confidence-bar-fill" style="width:${pct}%"></div></div>
     <div class="pain-meta">
-      <span>加權 CTR <span class="num">${pctLabel(row.weighted_ctr)}</span></span>
-      <span>加權 CPA <span class="num">${row.weighted_cpa ?? '—'}</span></span>
-      <span>加權 CVR <span class="num">${pctLabel(row.weighted_cvr)}</span></span>
-      ${row.weighted_roas != null ? `<span>加權 ROAS <span class="num">${row.weighted_roas}</span></span>` : ''}
+      ${metricSpan('ctr', pctLabel(row.weighted_ctr), '加權')}
+      ${metricSpan('cpa', row.weighted_cpa ?? '—', '加權')}
+      ${metricSpan('cvr', pctLabel(row.weighted_cvr), '加權')}
+      ${row.weighted_roas != null ? metricSpan('roas', row.weighted_roas, '加權') : ''}
       <span>總花費 <span class="num">${row.total_spend ?? '—'}</span></span>
     </div>
   </article>`;
@@ -1700,10 +1816,10 @@ function renderMatrix(result) {
 
   container.innerHTML = `
     ${report.note ? `<p class="muted" style="margin-bottom:14px">${esc(report.note)}</p>` : ''}
-    <p class="muted" style="margin-bottom:10px">依據 ${report.based_on_ad_copies} 則有成效數據的廣告文案（文案庫共 ${report.total_tagged_ad_copies} 則）計算，按加權 CTR 由高到低排序。</p>
+    <p class="muted" style="margin-bottom:10px">依據 ${report.based_on_ad_copies} 則有成效數據的廣告文案（文案庫共 ${report.total_tagged_ad_copies} 則）計算，按加權點閱率（CTR）由高到低排序。</p>
     <h3 style="margin:16px 0 8px">痛點轉換矩陣</h3>
     <div class="r-breakdown">${painRows || '<p class="muted">尚無資料。</p>'}</div>
-    <h3 style="margin:20px 0 8px">高 CTR 結構模板</h3>
+    <h3 style="margin:20px 0 8px">高點閱率結構模板</h3>
     <div class="r-breakdown">${structRows || '<p class="muted">尚無資料。</p>'}</div>
   `;
 }
@@ -1738,25 +1854,91 @@ if (cornerToggle && cornerPanel) {
   });
 }
 
+// 記住最後一次 auth:change 廣播的內容，「帳號設定」modal 開啟時直接拿來預填，
+// 不用另外再問 auth.js 要一次目前的登入狀態。
+let latestAuthDetail = null;
+
 function updateCornerLabel(detail) {
+  latestAuthDetail = detail;
   const cornerLabel = $('#account-corner-label');
   const dot = document.querySelector('.account-corner-dot');
+  const settingsBtn = $('#account-settings-btn');
   if (!cornerLabel) return;
   if (!detail || !detail.loggedIn) {
     cornerLabel.textContent = '尚未登入';
     if (dot) dot.style.background = 'var(--muted, #9aa0a6)';
+    if (settingsBtn) settingsBtn.hidden = true;
     return;
   }
   const label = detail.displayName || detail.email || '已登入';
   cornerLabel.textContent = label.length > 14 ? label.slice(0, 14) + '…' : label;
   if (dot) dot.style.background = '#2f7a3d';
+  if (settingsBtn) settingsBtn.hidden = false;
 }
 
 window.addEventListener('auth:change', e => {
   updateCornerLabel(e.detail);
   // 剛登入/註冊成功就自動收合面板，不用使用者自己再點一次關掉。
   if (e.detail && e.detail.loggedIn && cornerPanel) cornerPanel.hidden = true;
+  // 登出後若帳號設定 modal 還開著，一併關掉，避免顯示已經失效的資料。
+  if (!e.detail || !e.detail.loggedIn) closeAccountSettings();
 });
+
+// ---------------- 帳號設定 modal ----------------
+// 獨立於登入面板之外：登入後才會在使用者名稱旁邊出現一顆「⚙」按鈕，點下去開啟這個
+// modal，專門用來看帳號資訊、修改顯示名稱，跟「登入/註冊」的表單分開，減少混淆。
+
+const accountSettingsBtn = $('#account-settings-btn');
+const accountSettingsOverlay = $('#account-settings-overlay');
+const accountSettingsNameInput = $('#account-settings-name-input');
+const accountSettingsEmailEl = $('#account-settings-email');
+const accountSettingsSaveBtn = $('#account-settings-save');
+const accountSettingsCloseBtn = $('#account-settings-close');
+const accountSettingsSignoutBtn = $('#account-settings-signout');
+
+function openAccountSettings() {
+  if (!accountSettingsOverlay) return;
+  if (cornerPanel) cornerPanel.hidden = true;
+  if (accountSettingsEmailEl) {
+    accountSettingsEmailEl.textContent = latestAuthDetail && latestAuthDetail.email
+      ? `登入信箱：${latestAuthDetail.email}` : '';
+  }
+  if (accountSettingsNameInput) accountSettingsNameInput.value = (latestAuthDetail && latestAuthDetail.displayName) || '';
+  accountSettingsOverlay.hidden = false;
+}
+function closeAccountSettings() {
+  if (accountSettingsOverlay) accountSettingsOverlay.hidden = true;
+}
+
+if (accountSettingsBtn) accountSettingsBtn.onclick = openAccountSettings;
+if (accountSettingsCloseBtn) accountSettingsCloseBtn.onclick = closeAccountSettings;
+if (accountSettingsOverlay) {
+  accountSettingsOverlay.addEventListener('click', e => { if (e.target === accountSettingsOverlay) closeAccountSettings(); });
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && accountSettingsOverlay && !accountSettingsOverlay.hidden) closeAccountSettings();
+});
+
+if (accountSettingsSaveBtn) {
+  accountSettingsSaveBtn.onclick = async () => {
+    const name = (accountSettingsNameInput.value || '').trim();
+    if (!name) { setStatus('⚠ 請輸入顯示名稱。', true); return; }
+    accountSettingsSaveBtn.disabled = true;
+    try {
+      await window.updateDisplayName(name);
+      setStatus('已更新顯示名稱。');
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { accountSettingsSaveBtn.disabled = false; }
+  };
+}
+if (accountSettingsSignoutBtn) {
+  accountSettingsSignoutBtn.onclick = async () => {
+    accountSettingsSignoutBtn.disabled = true;
+    try { await window.signOut(); closeAccountSettings(); }
+    catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { accountSettingsSignoutBtn.disabled = false; }
+  };
+}
 
 // ---------------- 初始化 ----------------
 
