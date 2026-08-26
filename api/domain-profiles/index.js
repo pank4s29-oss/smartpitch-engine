@@ -1,6 +1,7 @@
 const { getUserFromRequest, restRequest, sendError } = require('../_lib/supabase');
 
 const norm = s => (s || '').trim().toLowerCase();
+const PRIMARY_CONVERSION_EVENTS = new Set(['lead', 'purchase', 'complete_registration', 'schedule', 'add_to_cart']);
 
 // 目標受眾改為可複選陣列：統一在這裡做清理（trim、去空字串、去重複），
 // 前端可能傳來字串（單一受眾，向後相容）或陣列（多個受眾），這裡一律正規化成
@@ -39,6 +40,7 @@ module.exports = async (req, res) => {
     const {
       domain_tag, audience, audiences, price_tier, constraints,
       product_name, core_selling_point, solution_description, trust_proof,
+      primary_conversion_event, workflow_notes,
     } = req.body || {};
     // audiences 是新欄位（陣列）；audience（單一字串）保留相容，若前端還沒更新也不會壞掉。
     const audienceList = normalizeAudiences(audiences !== undefined ? audiences : audience);
@@ -47,6 +49,9 @@ module.exports = async (req, res) => {
     }
     if (!product_name || !solution_description) {
       return sendError(res, 400, '請填寫產品／服務名稱與解決方案說明，這是後續萃取痛點與產出報告會用到的核心資訊。');
+    }
+    if (primary_conversion_event && !PRIMARY_CONVERSION_EVENTS.has(primary_conversion_event)) {
+      return sendError(res, 400, '不支援的主要轉換事件。');
     }
     try {
       // 重複偵測：同一使用者底下，領域＋受眾組合（忽略大小寫、前後空白與順序）相同就視為重複，
@@ -75,6 +80,8 @@ module.exports = async (req, res) => {
           core_selling_point: core_selling_point || null,
           solution_description,
           trust_proof: trust_proof || null,
+          primary_conversion_event: primary_conversion_event || 'lead',
+          workflow_notes: workflow_notes || '',
         },
       });
       return res.status(200).json(profile);
@@ -106,6 +113,9 @@ module.exports = async (req, res) => {
       await restRequest(`audience_reports?user_id=eq.${user.id}`, { method: 'DELETE' });
       await restRequest(`insight_reports?user_id=eq.${user.id}`, { method: 'DELETE' }).catch(() => {});
       await restRequest(`product_solutions?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`ad_performance_history?user_id=eq.${user.id}`, { method: 'DELETE' }).catch(() => {});
+      await restRequest(`ad_performance_current?user_id=eq.${user.id}`, { method: 'DELETE' }).catch(() => {});
+      await restRequest(`ad_copies?user_id=eq.${user.id}`, { method: 'DELETE' });
       await restRequest(`audience_segments?user_id=eq.${user.id}`, { method: 'DELETE' });
       await restRequest(`audience_pain_points?user_id=eq.${user.id}`, { method: 'DELETE' });
       await restRequest(`raw_customer_feedback?user_id=eq.${user.id}&domain_profile_id=not.is.null`, { method: 'DELETE' });
@@ -121,6 +131,7 @@ module.exports = async (req, res) => {
     const {
       domain_tag, audience, audiences, price_tier, constraints,
       product_name, core_selling_point, solution_description, trust_proof,
+      primary_conversion_event, workflow_notes,
     } = req.body || {};
     const patch = {};
     if (domain_tag !== undefined) patch.domain_tag = domain_tag;
@@ -137,6 +148,11 @@ module.exports = async (req, res) => {
     if (core_selling_point !== undefined) patch.core_selling_point = core_selling_point;
     if (solution_description !== undefined) patch.solution_description = solution_description;
     if (trust_proof !== undefined) patch.trust_proof = trust_proof;
+    if (primary_conversion_event !== undefined) {
+      if (!PRIMARY_CONVERSION_EVENTS.has(primary_conversion_event)) return sendError(res, 400, '不支援的主要轉換事件。');
+      patch.primary_conversion_event = primary_conversion_event;
+    }
+    if (workflow_notes !== undefined) patch.workflow_notes = workflow_notes || '';
     if (!Object.keys(patch).length) return sendError(res, 400, '沒有要更新的欄位。');
     try {
       const updated = await restRequest(`domain_profiles?id=eq.${id}&user_id=eq.${user.id}`, {
