@@ -58,12 +58,21 @@ function statsTable(D, rows) {
   });
 }
 
-function painPointSection(D, p) {
+// 每個痛點獨立包成一張「卡片」（單一儲存格的表格，帶邊框與底色），而不是一串鬆散的
+// 段落——純段落在 Word 裡視覺上很難看出「這裡到下一個標題之間都屬於同一個痛點」，
+// 尤其這份報告常常有 5、6 筆以上的痛點，混在一起就是使用者抱怨的「雜亂無章」。
+// 用表格單一儲存格模擬卡片邊框是 docx 格式裡最穩定的做法（Paragraph 沒有原生的
+// box-border 概念）；cantSplit 讓同一張卡片盡量不要被硬切到下一頁中間。
+function painPointCard(D, p, index) {
+  const title = `痛點 ${index + 1}：${p.surface_problem || '（未命名痛點）'}`;
   const paras = [
-    heading(D, p.surface_problem || '（未命名痛點）', D.HeadingLevel.HEADING_3),
+    new D.Paragraph({
+      children: [new D.TextRun({ text: title, bold: true, size: 26, color: '18332B' })],
+      spacing: { after: 100 },
+    }),
     bodyText(D, `深層渴望：${p.deep_desire || '—'}`),
   ];
-  if (p.detail) paras.push(bodyText(D, p.detail, { italics: true }));
+  if (p.detail) paras.push(bodyText(D, p.detail, { italics: true, color: '555555' }));
 
   const metaLine = [
     `來源：${SOURCE_LABEL[p.source] || p.source || '—'}`,
@@ -90,8 +99,30 @@ function painPointSection(D, p) {
   } else {
     paras.push(bodyText(D, '尚無對應的真實廣告成效數據，目前僅有語料佐證。', { color: '999999' }));
   }
+  const card = new D.Table({
+    width: { size: 100, type: D.WidthType.PERCENTAGE },
+    rows: [
+      new D.TableRow({
+        cantSplit: true,
+        children: [
+          new D.TableCell({
+            shading: { type: D.ShadingType.CLEAR, fill: 'F7F9F8' },
+            margins: { top: 160, bottom: 160, left: 180, right: 180 },
+            borders: {
+              top: { style: D.BorderStyle.SINGLE, size: 4, color: 'BFD4CB' },
+              bottom: { style: D.BorderStyle.SINGLE, size: 4, color: 'BFD4CB' },
+              left: { style: D.BorderStyle.SINGLE, size: 16, color: '3E7A5C' },
+              right: { style: D.BorderStyle.SINGLE, size: 4, color: 'BFD4CB' },
+            },
+            children: paras,
+          }),
+        ],
+      }),
+    ],
+  });
 
-  return paras;
+  // 卡片之間留一段空白，避免下一張卡片的邊框直接貼著上一張，視覺上黏在一起。
+  return [card, new D.Paragraph({ text: '', spacing: { after: 200 } })];
 }
 
 async function buildReportDocx(report, meta) {
@@ -125,6 +156,9 @@ async function buildReportDocx(report, meta) {
 
   children.push(heading(D, '導讀', D.HeadingLevel.HEADING_2));
   children.push(bodyText(D, report.narrative || 'AI 導讀暫時無法產生，以下數據統計仍完整可用。'));
+  if (report.narrative_edited) {
+    children.push(bodyText(D, '（此段導讀內容已由使用者手動編輯，非 AI 依數據自動產出的原文。）', { italics: true, color: '999999' }));
+  }
 
   children.push(heading(D, '覆蓋率統計', D.HeadingLevel.HEADING_2));
   children.push(statsTable(D, [
@@ -154,11 +188,14 @@ async function buildReportDocx(report, meta) {
   }
 
   const points = Array.isArray(report.pain_points) ? report.pain_points : [];
+  // 逐項分析獨立另起一頁：跟前面的摘要統計／導讀分開，讀者一眼就知道「總覽」看完了，
+  // 接下來是「一筆一筆的細節」，而不是被同一頁越擠越長的內容打斷閱讀節奏。
+  children.push(new D.Paragraph({ children: [], pageBreakBefore: true }));
   children.push(heading(D, '受眾痛點逐項分析', D.HeadingLevel.HEADING_2));
   if (!points.length) {
     children.push(bodyText(D, '此產品/服務設定尚無痛點資料。', { color: '999999' }));
   } else {
-    points.forEach(p => children.push(...painPointSection(D, p)));
+    points.forEach((p, i) => children.push(...painPointCard(D, p, i)));
   }
 
   const doc = new D.Document({
