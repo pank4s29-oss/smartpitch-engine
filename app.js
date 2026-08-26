@@ -221,6 +221,7 @@ $('#profile-delete-btn').onclick = async () => {
     setStatus('已刪除產品/服務設定。');
     currentProfileId = null;
     await loadProfiles();
+    await loadReportLibrary();
     onProfileSelected(null);
   } catch (err) { setStatus('⚠ ' + err.message, true); }
 };
@@ -244,6 +245,7 @@ if (clearAllBtn) {
       $('#profile-form').hidden = true;
       $('#profile-form').classList.remove('editing');
       await loadProfiles();
+      await loadReportLibrary();
       onProfileSelected(null);
       setStatus('已清空所有產品/服務設定紀錄。');
     } catch (err) {
@@ -308,6 +310,7 @@ function onProfileSelected(id) {
   // 改用 body 的 class 統一控制「尚未選擇產品/服務設定」時，各頁面顯示提示文字、
   // 隱藏底下需要 currentProfileId 才有意義的內容（見 style.css 的 .requires-profile 規則）。
   document.body.classList.toggle('no-profile-selected', !id);
+  clearReportEditor();
   if (!id) return;
   $('#report-result').hidden = true;
   const suggestPreview = $('#suggest-preview');
@@ -1323,19 +1326,14 @@ if (segmentsBtn) {
   };
 }
 
-// ---------------- 產出報告與匯出（現已併入「潛在受眾地圖」頁面，不再是獨立頁籤） ----------------
-// 報告不再是另外呼叫 AI 產生、存成快照的獨立分析（AI 導讀／覆蓋率統計／風險提示／
-// 語料佐證與置信度／廣告成效比對），而是直接把「受眾痛點列表」與「潛在受眾地圖」這兩份
-// 系統本來就有、使用者已經在看的清單，原樣組成一份可離線保存或寄送客戶的報告。
-// 拿掉語料佐證與置信度的理由：顧客／網友在語料裡提到什麼，本來就不等於「這個受眾一定
-// 存在或一定被打動」，用一個百分比置信度包裝反而讓人誤以為是精準量化的證據；真正可信
-// 的驗證方式是「Meta 廣告效益驗證」頁面裡的真實花費／點擊／轉換數據，那部分維持獨立。
-//
-// 因為不再存成快照，也就不需要「報告資料庫」／「歷史報告」——每次打開報告都是即時
-// 讀取當下最新的痛點與受眾族群，跟畫面上其他頁面看到的資料保證一致，不會有版本落後
-// 或對不上的問題。
+// ---------------- 受眾分析報告與報告資料庫 ----------------
+// 報告預覽仍以目前的痛點列表與潛在受眾地圖即時產出；使用者按下保存後，
+// 才把這兩大內容以快照形式寫入報告資料庫，方便日後依產品／服務與報告性質回顧。
 
-let currentReportProfileId = null; // 記住目前報告畫面對應哪個產品/服務設定，供匯出 Word 使用
+let currentReportProfileId = null;
+let currentReportId = null;
+let currentReportData = null;
+let reportLibraryCache = [];
 
 function reportPainPointCardHtml(p, index) {
   return `<article class="pain-card">
@@ -1444,8 +1442,38 @@ function printReportPanel() {
   }, 350);
 }
 
-function renderReport(data) {
+function reportDefaultTitle() {
+  const profile = profilesCache.find(item => item.id === currentReportProfileId);
+  return `${profile && (profile.product_name || profile.domain_tag) ? (profile.product_name || profile.domain_tag) : '受眾分析'}｜受眾分析`;
+}
+
+function setReportEditorMeta(meta = {}) {
+  const editor = $('#report-save-editor');
+  const form = $('#report-save-form');
+  if (!editor || !form) return;
+  editor.hidden = false;
+  form.title.value = meta.title || reportDefaultTitle();
+  form.report_type.value = meta.report_type || '受眾分析';
+  form.description.value = meta.description || '';
+  const saveBtn = $('#save-report-btn');
+  if (saveBtn) saveBtn.textContent = meta.id ? '更新報告' : '保存報告';
+}
+
+function clearReportEditor() {
+  currentReportId = null;
+  currentReportData = null;
+  const editor = $('#report-save-editor');
+  const form = $('#report-save-form');
+  if (editor) editor.hidden = true;
+  if (form) form.reset();
+  const saveBtn = $('#save-report-btn');
+  if (saveBtn) saveBtn.textContent = '保存報告';
+}
+
+function renderReport(data, meta = {}) {
   currentReportProfileId = currentProfileId;
+  currentReportId = meta.id || null;
+  currentReportData = data;
   const container = $('#report-result');
   if (!container) return;
 
@@ -1470,6 +1498,7 @@ function renderReport(data) {
     ${segments.length ? segments.map((s, i) => reportSegmentCardHtml(s, i, painMap)).join('') : '<p class="muted">此產品/服務設定尚無潛在受眾分析結果。</p>'}
   </div>`;
   container.hidden = false;
+  setReportEditorMeta(meta);
 
   container.querySelector('.report-print').onclick = printReportPanel;
   container.querySelector('.report-export-docx').onclick = e => downloadReportDocx(currentReportProfileId, e.currentTarget);
@@ -1477,11 +1506,155 @@ function renderReport(data) {
   container.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-async function generateReport(profileId) {
+async function generateReport(profileId, meta = {}) {
   const data = await api(`/api/insight-reports?profile_id=${encodeURIComponent(profileId)}`);
-  renderReport(data);
+  renderReport(data, meta);
   return data;
 }
+
+async function loadReportLibrary() {
+  const list = $('#report-library-list');
+  if (!list) return;
+  try {
+    reportLibraryCache = await api('/api/audience-reports');
+    renderReportLibraryFilters();
+    renderReportLibrary();
+  } catch (err) {
+    list.innerHTML = `<p class="muted">${esc(err.message || '無法載入報告資料庫。')}</p>`;
+  }
+}
+
+function reportProfileLabel(report) {
+  const profile = report.domain_profile || profilesCache.find(item => item.id === report.domain_profile_id);
+  if (!profile) return '（產品／服務設定已刪除）';
+  return profile.product_name ? `${profile.product_name}／${profile.domain_tag}` : `${profile.domain_tag}／${audiencesOf(profile).join('、')}`;
+}
+
+function renderReportLibraryFilters() {
+  const select = $('#report-filter-profile');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = '<option value="">全部產品／服務</option>' + profilesCache.map(profile =>
+    `<option value="${esc(profile.id)}">${esc(profileLabel(profile))}</option>`
+  ).join('');
+  if (current && profilesCache.some(profile => profile.id === current)) select.value = current;
+}
+
+function reportLibraryCardHtml(report) {
+  const updated = report.updated_at ? new Date(report.updated_at).toLocaleString('zh-TW', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+  return `<article class="report-library-card" data-id="${esc(report.id)}">
+    <div class="report-library-card-main">
+      <div class="report-library-card-title">${esc(report.title)}</div>
+      <div class="report-library-card-meta"><span class="report-type-badge">${esc(report.report_type)}</span><span>${esc(reportProfileLabel(report))}</span><span>更新於 ${esc(updated)}</span></div>
+      ${report.description ? `<p class="report-library-card-description">${esc(report.description)}</p>` : ''}
+    </div>
+    <div class="report-library-card-actions">
+      <button type="button" class="small secondary report-view-btn">查看／編輯</button>
+      <button type="button" class="small danger ghost report-delete-btn">刪除</button>
+    </div>
+  </article>`;
+}
+
+function renderReportLibrary() {
+  const list = $('#report-library-list');
+  if (!list) return;
+  const profileId = $('#report-filter-profile') ? $('#report-filter-profile').value : '';
+  const reportType = $('#report-filter-type') ? $('#report-filter-type').value : '';
+  const filtered = reportLibraryCache.filter(report =>
+    (!profileId || report.domain_profile_id === profileId) && (!reportType || report.report_type === reportType)
+  );
+  list.innerHTML = filtered.length ? filtered.map(reportLibraryCardHtml).join('') : '<p class="muted">目前沒有符合條件的報告。</p>';
+
+  list.querySelectorAll('.report-view-btn').forEach(button => {
+    button.onclick = async () => {
+      const card = button.closest('.report-library-card');
+      try {
+        const report = await api(`/api/audience-reports/${encodeURIComponent(card.dataset.id)}`);
+        const profileSelect = $('#profile-select');
+        if (profileSelect) profileSelect.value = report.domain_profile_id;
+        onProfileSelected(report.domain_profile_id);
+        renderReport(report.snapshot || {}, {
+          id: report.id,
+          title: report.title,
+          report_type: report.report_type,
+          description: report.description,
+        });
+        if (window.goToPage) window.goToPage('segments');
+        setTimeout(() => $('#report-result')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    };
+  });
+
+  list.querySelectorAll('.report-delete-btn').forEach(button => {
+    button.onclick = async () => {
+      const card = button.closest('.report-library-card');
+      const report = reportLibraryCache.find(item => item.id === card.dataset.id);
+      if (!confirm(`確定要刪除「${report ? report.title : '這份報告'}」嗎？此操作無法復原。`)) return;
+      button.disabled = true;
+      try {
+        await api(`/api/audience-reports/${encodeURIComponent(card.dataset.id)}`, { method: 'DELETE' });
+        reportLibraryCache = reportLibraryCache.filter(item => item.id !== card.dataset.id);
+        renderReportLibrary();
+        if (currentReportId === card.dataset.id) clearReportEditor();
+        setStatus('已刪除報告。');
+      } catch (err) { setStatus('⚠ ' + err.message, true); button.disabled = false; }
+    };
+  });
+}
+
+const reportSaveForm = $('#report-save-form');
+if (reportSaveForm) {
+  reportSaveForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!currentReportProfileId || !currentReportData) {
+      setStatus('⚠ 請先產出一份報告，再保存到報告資料庫。', true);
+      return;
+    }
+    const button = $('#save-report-btn');
+    if (button) button.disabled = true;
+    const fields = Object.fromEntries(new FormData(reportSaveForm));
+    try {
+      const payload = {
+        domain_profile_id: currentReportProfileId,
+        title: fields.title,
+        report_type: fields.report_type,
+        description: fields.description,
+        snapshot: currentReportData,
+      };
+      const isUpdate = !!currentReportId;
+      const saved = isUpdate
+        ? await api(`/api/audience-reports/${encodeURIComponent(currentReportId)}`, { method: 'PATCH', body: JSON.stringify(payload) })
+        : await api('/api/audience-reports', { method: 'POST', body: JSON.stringify(payload) });
+      currentReportId = saved.id;
+      setReportEditorMeta(saved);
+      await loadReportLibrary();
+      setStatus(isUpdate ? '報告已更新。' : '報告已保存。');
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { if (button) button.disabled = false; }
+  });
+}
+
+const reportRefreshBtn = $('#report-refresh-current-btn');
+if (reportRefreshBtn) {
+  reportRefreshBtn.onclick = async () => {
+    if (!currentReportProfileId) return;
+    const form = $('#report-save-form');
+    const meta = form ? { id: currentReportId, title: form.title.value, report_type: form.report_type.value, description: form.description.value } : {};
+    reportRefreshBtn.disabled = true;
+    try {
+      await generateReport(currentReportProfileId, meta);
+      setStatus('已依目前痛點與潛在受眾地圖重新產出內容，請按「更新報告」保存新版本。');
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { reportRefreshBtn.disabled = false; }
+  };
+}
+
+['report-filter-profile', 'report-filter-type'].forEach(id => {
+  const element = $('#' + id);
+  if (element) element.addEventListener('change', renderReportLibrary);
+});
+const reportsRefreshBtn = $('#reports-refresh-btn');
+if (reportsRefreshBtn) reportsRefreshBtn.onclick = loadReportLibrary;
 
 $('#generate-report-btn').onclick = async () => {
   if (!currentProfileId) return;
@@ -2359,6 +2532,7 @@ async function init() {
   await loadProductSolutions();
   loadSwipes();
   loadAdPlacements();
+  await loadReportLibrary();
   renderDashboard();
 }
 if (window.authReady) window.authReady.then(init); else init();
