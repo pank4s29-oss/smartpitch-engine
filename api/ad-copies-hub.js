@@ -451,6 +451,61 @@ async function handleMatrixCreate(req, res, user) {
   }
 }
 
+// 編輯單一廣告文案：允許人工修正 AI 標籤化的結果（例如判斷錯的主打痛點、投放版位打錯），
+// 以及手動回填/修正成效數據，不用重新走一次「貼上文案觸發 AI」的流程。
+// 刻意不允許在這裡改 raw_content——文案內容一改，content_hash 去重的意義就不一致了，
+// 若真的貼錯文案，建議直接刪除重新新增一則。
+async function handleUpdate(req, res, user, id) {
+  const { platform, primary_pain_tag, secondary_pain_tags, performance } = req.body || {};
+  try {
+    const [existing] = await restRequest(`ad_copies?id=eq.${id}&user_id=eq.${user.id}&select=*`);
+    if (!existing) return sendError(res, 404, '找不到對應的廣告文案。');
+
+    const patch = {};
+    if (platform !== undefined) patch.platform = platform || null;
+    if (primary_pain_tag !== undefined || secondary_pain_tags !== undefined) {
+      const tags = { ...(existing.ai_tags || {}) };
+      if (primary_pain_tag !== undefined) {
+        if (!primary_pain_tag) return sendError(res, 400, '主打痛點標籤不能為空。');
+        tags.primary_pain_tag = primary_pain_tag;
+      }
+      if (secondary_pain_tags !== undefined) {
+        tags.secondary_pain_tags = Array.isArray(secondary_pain_tags) ? secondary_pain_tags.slice(0, 2) : [];
+      }
+      patch.ai_tags = tags;
+      patch.tagging_error = null; // 人工已修正，清掉舊的標籤化失敗訊息，避免畫面同時顯示錯誤又顯示標籤
+    }
+
+    let updated = existing;
+    if (Object.keys(patch).length) {
+      const rows = await restRequest(`ad_copies?id=eq.${id}&user_id=eq.${user.id}`, {
+        method: 'PATCH', prefer: 'return=representation', body: patch,
+      });
+      if (!rows.length) return sendError(res, 404, '找不到對應的廣告文案。');
+      updated = rows[0];
+    }
+
+    if (performance) {
+      const spend = numOrNull(performance.spend);
+      const impressions = numOrNull(performance.impressions);
+      const clicks = numOrNull(performance.clicks);
+      const conversions = numOrNull(performance.conversions);
+      const revenue = numOrNull(performance.revenue);
+      const metrics = computeMetrics({ spend, impressions, clicks, conversions, revenue });
+      await restRequest('ad_performance_current?on_conflict=ad_copy_id', {
+        method: 'POST',
+        prefer: 'resolution=merge-duplicates,return=representation',
+        body: { ad_copy_id: id, user_id: user.id, spend, impressions, clicks, conversions, revenue, ...metrics },
+      });
+    }
+
+    const [full] = await restRequest(`ad_copies?id=eq.${id}&user_id=eq.${user.id}&select=*,performance:ad_performance_current(*)`);
+    return res.status(200).json(full || updated);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 // 刪除單一廣告文案——ad_performance_current 有 FK ON DELETE CASCADE，會一併清掉對應的成效列，
 // 不用另外呼叫兩次刪除。這支主要給使用者清掉匯錯的 CSV 資料列或測試資料用。
 async function handleDelete(req, res, user, id) {
@@ -482,6 +537,7 @@ module.exports = async (req, res) => {
   }
 
   if (id) {
+    if (req.method === 'PATCH') return handleUpdate(req, res, user, id);
     if (req.method !== 'DELETE') return sendError(res, 405, '不支援的方法。');
     return handleDelete(req, res, user, id);
   }
