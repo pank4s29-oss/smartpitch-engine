@@ -1,6 +1,6 @@
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
-const status = $('#status') || (() => { const el = document.createElement('section'); el.id = 'status'; el.setAttribute('aria-live', 'polite'); document.querySelector('#composer-panel').before(el); return el; })();
+const status = $('#status') || (() => { const el = document.createElement('section'); el.id = 'status'; el.setAttribute('aria-live', 'polite'); document.querySelector('main.page-container').before(el); return el; })();
 
 const esc = value => String(value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
 
@@ -39,8 +39,9 @@ function renderImagePreview(container, fileList) {
 }
 
 // 產品/服務設定的顯示格式：以產品名稱為主，後面用斜線接領域，方便在下拉選單中一眼認出是哪個產品。
-// 舊資料若沒有 product_name（理論上不會發生，但保底），退回原本的 domain_tag／audience 格式。
-const profileLabel = p => (p && p.product_name) ? `${p.product_name}／${p.domain_tag}` : `${p.domain_tag}／${p.audience}`;
+// 舊資料若沒有 product_name（理論上不會發生，但保底），退回原本的 domain_tag／audiences 格式。
+const audiencesOf = p => Array.isArray(p && p.audiences) ? p.audiences : (p && p.audience ? [p.audience] : []);
+const profileLabel = p => (p && p.product_name) ? `${p.product_name}／${p.domain_tag}` : `${p.domain_tag}／${audiencesOf(p).join('、')}`;
 
 const SOURCE_LABEL = { user_input: '手動輸入', ai_suggested: 'AI 建議', raw_feedback_extraction: '語料萃取', swipe_import: '文案手法庫帶入' };
 const STAMP_LABEL = { unreviewed: '未複核', confirmed: '已確認', edited: '已確認．已修改', rejected: '已駁回' };
@@ -109,6 +110,45 @@ let currentProfileId = null;
 let profilesCache = [];
 let editingProfileId = null; // 非 null 時，#profile-form 處於「編輯既有設定」模式
 
+// ---------------- 目標受眾（多選標籤）----------------
+// 比照語料來源分類的標籤新增/刪除互動，但這裡的值只存在單一產品/服務設定的
+// audiences 陣列裡，不需要像 feedback_source_labels 那樣獨立一張表跨頁面共用。
+let profileAudienceTags = [];
+
+function renderProfileAudienceChips() {
+  const chips = $('#profile-audience-chips');
+  if (!chips) return;
+  chips.innerHTML = profileAudienceTags.map((a, i) => `
+    <span class="label-chip" data-i="${i}">${esc(a)} <button type="button" title="移除受眾" aria-label="移除受眾">×</button></span>
+  `).join('');
+  chips.querySelectorAll('button').forEach(btn => {
+    btn.onclick = () => {
+      profileAudienceTags.splice(Number(btn.closest('.label-chip').dataset.i), 1);
+      renderProfileAudienceChips();
+    };
+  });
+}
+
+function addProfileAudienceTag() {
+  const input = $('#profile-audience-input');
+  if (!input) return;
+  const value = input.value.trim();
+  if (!value) return;
+  if (profileAudienceTags.some(a => a.toLowerCase() === value.toLowerCase())) { input.value = ''; return; }
+  profileAudienceTags.push(value);
+  input.value = '';
+  renderProfileAudienceChips();
+}
+
+const profileAudienceAddBtn = $('#profile-audience-add');
+if (profileAudienceAddBtn) profileAudienceAddBtn.onclick = addProfileAudienceTag;
+const profileAudienceInput = $('#profile-audience-input');
+if (profileAudienceInput) {
+  profileAudienceInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); addProfileAudienceTag(); }
+  });
+}
+
 async function loadProfiles(selectId) {
   const select = $('#profile-select');
   try {
@@ -133,7 +173,7 @@ function setProfileFormMode(mode, profile) {
   form.classList.toggle('editing', mode === 'edit');
   if (mode === 'edit') {
     form.domain_tag.value = profile.domain_tag;
-    form.audience.value = profile.audience;
+    profileAudienceTags = [...audiencesOf(profile)];
     const radio = form.querySelector(`input[name="price_tier"][value="${profile.price_tier}"]`);
     if (radio) radio.checked = true;
     form.product_name.value = profile.product_name || '';
@@ -145,8 +185,10 @@ function setProfileFormMode(mode, profile) {
     submitBtn.textContent = '更新產品／服務設定';
   } else {
     form.reset();
+    profileAudienceTags = [];
     submitBtn.textContent = '建立產品／服務設定';
   }
+  renderProfileAudienceChips();
   form.hidden = false;
 }
 
@@ -159,6 +201,7 @@ $('#new-profile-toggle').onclick = () => {
 $('#profile-form-cancel').onclick = () => {
   $('#profile-form').hidden = true;
   editingProfileId = null;
+  profileAudienceTags = [];
   $('#profile-form').classList.remove('editing');
 };
 
@@ -218,12 +261,16 @@ $('#profile-form').addEventListener('submit', async e => {
   // 呈現媒介限制是多選 checkbox，Object.fromEntries 對同名欄位只會保留最後一個值，
   // 要另外用 getAll 取出完整陣列，否則勾選多個限制送出後只會剩一個。
   data.constraints = formData.getAll('constraints');
+  // 目標受眾改成多選標籤，不是原生表單欄位，直接從標籤狀態組成陣列送出。
+  data.audiences = [...profileAudienceTags];
+  if (!data.audiences.length) { setStatus('⚠ 請至少新增一個目標受眾。', true); return; }
   try {
     if (editingProfileId) {
       const updated = await api(`/api/domain-profiles?id=${editingProfileId}`, { method: 'PATCH', body: JSON.stringify(data) });
       setStatus('已更新產品/服務設定。');
       e.target.hidden = true;
       editingProfileId = null;
+      profileAudienceTags = [];
       e.target.classList.remove('editing');
       await loadProfiles(updated.id);
       onProfileSelected(updated.id);
@@ -232,6 +279,7 @@ $('#profile-form').addEventListener('submit', async e => {
     const profile = await api('/api/domain-profiles', { method: 'POST', body: JSON.stringify(data) });
     setStatus('已建立產品/服務設定。');
     e.target.reset();
+    profileAudienceTags = [];
     e.target.hidden = true;
     await loadProfiles(profile.id);
     onProfileSelected(profile.id);
@@ -239,6 +287,7 @@ $('#profile-form').addEventListener('submit', async e => {
     if (err.duplicate && err.existing_id) {
       if (confirm(`${err.message}\n是否改用既有的「${err.existing_label}」？`)) {
         e.target.reset();
+        profileAudienceTags = [];
         e.target.hidden = true;
         await loadProfiles(err.existing_id);
         onProfileSelected(err.existing_id);
@@ -1077,6 +1126,51 @@ $('#manual-pain-form').addEventListener('submit', async e => {
   } catch (err) { setStatus('⚠ ' + err.message, true); }
 });
 
+// ---------------- 手動新增痛點：圖片辨識輔助 ----------------
+// 上傳一張截圖，AI 直接看圖分析出一組痛點草稿，帶入手動新增表單讓使用者檢視/修改後
+// 再自行按「手動新增一筆」送出——不直接寫入資料庫，理由與 AI 建議草稿（suggest）一致。
+const painImageInput = $('#pain-image-input');
+const painImagePreview = $('#pain-image-preview');
+const painImageSubmitBtn = $('#pain-image-submit');
+const painImageStatus = $('#pain-image-status');
+
+if (painImageInput) {
+  painImageInput.addEventListener('change', () => {
+    renderImagePreview(painImagePreview, painImageInput.files);
+    if (painImageSubmitBtn) painImageSubmitBtn.disabled = !painImageInput.files.length;
+  });
+}
+
+if (painImageSubmitBtn) {
+  painImageSubmitBtn.onclick = async () => {
+    if (!currentProfileId) { painImageStatus.textContent = '⚠ 請先選擇產品/服務設定。'; return; }
+    const file = painImageInput && painImageInput.files && painImageInput.files[0];
+    if (!file) return;
+    painImageSubmitBtn.disabled = true;
+    painImageStatus.textContent = '正在辨識圖片並分析痛點…';
+    try {
+      const image = await fileToImagePayload(file);
+      const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points?action=analyze-image`, {
+        method: 'POST',
+        body: JSON.stringify({ image }),
+      });
+      const form = $('#manual-pain-form');
+      form.surface_problem.value = result.surface_problem || '';
+      form.deep_desire.value = result.deep_desire || '';
+      form.detail.value = result.detail || '';
+      painImageStatus.textContent = result.surface_problem
+        ? '已帶入草稿，請檢視／修改後按下方「手動新增一筆」送出。'
+        : '這張圖片沒有看出明確的受眾痛點，可以換一張截圖，或直接手動填寫。';
+      painImageInput.value = '';
+      painImagePreview.innerHTML = '';
+    } catch (err) {
+      painImageStatus.textContent = '⚠ ' + err.message;
+    } finally {
+      painImageSubmitBtn.disabled = !(painImageInput && painImageInput.files && painImageInput.files.length);
+    }
+  };
+}
+
 // ---------------- 潛在受眾地圖 ----------------
 // 從目前已通過複核（未被駁回）的痛點反推：這些痛點背後可能對應到哪些沒被明講、
 // 但真實存在的細分受眾族群。每個族群卡片列出「這個族群是誰」以及「對應到哪些痛點」，
@@ -1452,6 +1546,38 @@ async function loadReportHistory() {
 
 // ---------------- 產業文案手法庫（維持原有功能，僅重新定位敘述） ----------------
 
+// 歸類商品/服務：手法庫是跨產品/服務設定瀏覽的全域清單，這裡的下拉選單列出使用者
+// 名下「所有」設定裡已建立的解決方案（不只是目前選取的那組設定），並用「產業／領域｜產品名稱」
+// 標示清楚是哪一組，避免不同設定剛好取了相同產品名稱時搞混。
+let productSolutionsCache = [];
+
+function productSolutionLabel(s) {
+  return `${s.domain_tag || '（未分類領域）'}｜${s.product_name}`;
+}
+
+async function loadProductSolutions() {
+  try {
+    productSolutionsCache = await api('/api/swipe-copies?action=solutions');
+    renderProductSolutionSelects();
+  } catch (e) { /* 選單載入失敗不影響手法庫主要功能，維持「不指定」即可 */ }
+}
+
+function renderProductSolutionSelects() {
+  const options = productSolutionsCache.map(s => `<option value="${esc(s.id)}">${esc(productSolutionLabel(s))}</option>`).join('');
+  [$('#swipe-product-select'), $('#swipe-image-product-select')].forEach(sel => {
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = '<option value="">— 不指定 —</option>' + options;
+    if (current && productSolutionsCache.some(s => s.id === current)) sel.value = current;
+  });
+  const filterSel = $('#swipe-filter-product');
+  if (filterSel) {
+    const current = filterSel.value;
+    filterSel.innerHTML = '<option value="">全部商品／服務</option>' + options;
+    if (current && productSolutionsCache.some(s => s.id === current)) filterSel.value = current;
+  }
+}
+
 const swipeForm = $('#swipe-form'), swipeStatus = $('#swipe-status'), swipeList = $('#swipe-list');
 
 swipeForm.addEventListener('submit', async e => {
@@ -1461,7 +1587,9 @@ swipeForm.addEventListener('submit', async e => {
   if (submitBtn) submitBtn.disabled = true;
   swipeStatus.textContent = '正在分析受眾痛點與身份洞察…';
   try {
-    const item = await api('/api/swipe-copies', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(swipeForm))) });
+    const body = Object.fromEntries(new FormData(swipeForm));
+    if (!body.domain_profile_id) delete body.domain_profile_id;
+    const item = await api('/api/swipe-copies', { method: 'POST', body: JSON.stringify(body) });
     const painCount = Array.isArray(item.extracted_pain_points) ? item.extracted_pain_points.length : 0;
     swipeStatus.textContent = `已分類：${item.industry_tag}／${item.framework_tag}。萃取到 ${painCount} 組受眾痛點與身份洞察。`;
     swipeForm.reset();
@@ -1499,6 +1627,7 @@ if (swipeImageSubmitBtn) {
       const payload = await fileToImagePayload(file);
       const sourceUrlEl = $('#swipe-image-source-url');
       const industryTagEl = $('#swipe-image-industry-tag');
+      const productSelectEl = $('#swipe-image-product-select');
       const item = await api('/api/swipe-copies', {
         method: 'POST',
         body: JSON.stringify({
@@ -1506,6 +1635,7 @@ if (swipeImageSubmitBtn) {
           image_mode: (swipeImageMode && swipeImageMode.value) || 'ocr',
           source_url: (sourceUrlEl && sourceUrlEl.value) || undefined,
           industry_tag: (industryTagEl && industryTagEl.value) || undefined,
+          domain_profile_id: (productSelectEl && productSelectEl.value) || undefined,
         }),
       });
       const painCount = Array.isArray(item.extracted_pain_points) ? item.extracted_pain_points.length : 0;
@@ -1514,6 +1644,7 @@ if (swipeImageSubmitBtn) {
       swipeImagePreview.innerHTML = '';
       if (sourceUrlEl) sourceUrlEl.value = '';
       if (industryTagEl) industryTagEl.value = '';
+      if (productSelectEl) productSelectEl.value = '';
       loadSwipes();
     } catch (err) {
       swipeImageStatus.textContent = '⚠ ' + err.message;
@@ -1534,9 +1665,18 @@ function swipeCardHtml(x) {
         </div>`).join('') + `</div>`
     : `<p class="muted">尚未萃取出可用的受眾洞察（可能是舊資料，點「重新分析」用最新邏輯重跑一次）。</p>`;
 
+  const solution = x.domain_profile_id ? productSolutionsCache.find(s => s.id === x.domain_profile_id) : null;
+  const solutionTag = solution
+    ? `<span class="label-chip" style="cursor:default">歸類：${esc(productSolutionLabel(solution))}</span>`
+    : '';
+  const productOptions = productSolutionsCache.map(s =>
+    `<option value="${esc(s.id)}" ${x.domain_profile_id === s.id ? 'selected' : ''}>${esc(productSolutionLabel(s))}</option>`
+  ).join('');
+
   return `<article class="pain-card">
     <strong>${esc(x.industry_tag)} · ${esc(x.framework_tag)}</strong><br>
     <span class="muted">${esc((x.emotion_tags || []).join('、'))}｜${esc((x.block_breakdown || []).join(' → '))}</span>
+    ${solutionTag ? `<div class="label-chips" style="margin-top:6px">${solutionTag}</div>` : ''}
     <p>${esc(x.raw_content.slice(0, 140))}${x.raw_content.length > 140 ? '…' : ''}</p>
     ${insightHtml}
     <div class="pain-actions">
@@ -1550,6 +1690,7 @@ function swipeCardHtml(x) {
         <label>產業／領域<input class="edit-industry_tag" value="${esc(x.industry_tag)}" required></label>
         <label>框架<input class="edit-framework_tag" value="${esc(x.framework_tag)}" required></label>
       </div>
+      <label>歸類商品／服務（選填）<select class="edit-domain_profile_id"><option value="">— 不指定 —</option>${productOptions}</select></label>
       <label>文案原文<textarea class="edit-raw_content" required>${esc(x.raw_content)}</textarea></label>
       <p class="muted" style="margin:4px 0 0">修改原文後，填空模板快取會清空，下次點開需要重新產生一次。</p>
       <div class="pain-actions">
@@ -1569,6 +1710,7 @@ const swipeFilterQ = $('#swipe-filter-q');
 const swipeFilterIndustry = $('#swipe-filter-industry');
 const swipeFilterFramework = $('#swipe-filter-framework');
 const swipeFilterAngle = $('#swipe-filter-angle');
+const swipeFilterProduct = $('#swipe-filter-product');
 const swipeFilterHasPain = $('#swipe-filter-has-pain');
 const swipeFilterReset = $('#swipe-filter-reset');
 const swipeFilterCount = $('#swipe-filter-count');
@@ -1598,11 +1740,12 @@ function swipeFilterQueryString() {
   if (swipeFilterIndustry && swipeFilterIndustry.value) params.set('industry_tag', swipeFilterIndustry.value);
   if (swipeFilterFramework && swipeFilterFramework.value) params.set('framework_tag', swipeFilterFramework.value);
   if (swipeFilterAngle && swipeFilterAngle.value) params.set('angle_type', swipeFilterAngle.value);
+  if (swipeFilterProduct && swipeFilterProduct.value) params.set('domain_profile_id', swipeFilterProduct.value);
   if (swipeFilterHasPain && swipeFilterHasPain.checked) params.set('has_pain_points', 'true');
   return params.toString();
 }
 
-[swipeFilterIndustry, swipeFilterFramework, swipeFilterAngle, swipeFilterHasPain].forEach(el => {
+[swipeFilterIndustry, swipeFilterFramework, swipeFilterAngle, swipeFilterProduct, swipeFilterHasPain].forEach(el => {
   if (el) el.addEventListener('change', () => loadSwipes());
 });
 let swipeFilterQTimer;
@@ -1618,6 +1761,7 @@ if (swipeFilterReset) {
     if (swipeFilterIndustry) swipeFilterIndustry.value = '';
     if (swipeFilterFramework) swipeFilterFramework.value = '';
     if (swipeFilterAngle) swipeFilterAngle.value = '';
+    if (swipeFilterProduct) swipeFilterProduct.value = '';
     if (swipeFilterHasPain) swipeFilterHasPain.checked = false;
     loadSwipes();
   };
@@ -1666,6 +1810,7 @@ async function loadSwipes() {
               industry_tag: form.querySelector('.edit-industry_tag').value.trim(),
               framework_tag: form.querySelector('.edit-framework_tag').value.trim(),
               raw_content: form.querySelector('.edit-raw_content').value.trim(),
+              domain_profile_id: form.querySelector('.edit-domain_profile_id').value || null,
             }),
           });
           setStatus('已更新範例文案。');
@@ -1704,7 +1849,7 @@ function reportLibraryFilterOptions() {
   const tierSelect = $('#report-filter-tier');
   if (!domainSelect || !audienceSelect || !tierSelect) return;
   const domains = [...new Set(profilesCache.map(p => p.domain_tag).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
-  const audiences = [...new Set(profilesCache.map(p => p.audience).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+  const audiences = [...new Set(profilesCache.flatMap(p => audiencesOf(p)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
   fillFilterSelect(domainSelect, domains);
   fillFilterSelect(audienceSelect, audiences);
   if (!tierSelect.dataset.built) {
@@ -1750,7 +1895,7 @@ function renderReportLibrary() {
   const filtered = reportLibraryCache.filter(r => {
     const profile = profilesCache.find(p => p.id === r.domain_profile_id);
     if (domainFilter && (!profile || profile.domain_tag !== domainFilter)) return false;
-    if (audienceFilter && (!profile || profile.audience !== audienceFilter)) return false;
+    if (audienceFilter && (!profile || !audiencesOf(profile).includes(audienceFilter))) return false;
     if (tierFilter && (!profile || profile.price_tier !== tierFilter)) return false;
     return true;
   });
@@ -1802,6 +1947,58 @@ if (reportLibraryPanel) {
   reportLibraryPanel.addEventListener('toggle', () => {
     if (reportLibraryPanel.open && !reportLibraryLoaded) { reportLibraryLoaded = true; loadReportLibrary(); }
   });
+}
+
+// ---------------- 投放版位（使用者自訂清單）----------------
+// 比照語料來源分類的做法：使用者層級共用一份清單（不綁定單一產品/服務設定），
+// 用於「加入廣告文案」表單的複選 checkbox，以及每則廣告文案編輯表單裡的版位選項。
+
+let adPlacementsCache = [];
+
+async function loadAdPlacements() {
+  try {
+    adPlacementsCache = await api('/api/ad-copies?action=placements');
+    renderAdPlacementList();
+  } catch (e) { /* 版位清單載入失敗不影響主要的廣告文案功能 */ }
+}
+
+function renderAdPlacementList() {
+  const container = $('#ad-placement-list');
+  if (!container) return;
+  container.innerHTML = adPlacementsCache.map(p => `
+    <span class="placement-choice">
+      <label class="choice"><input type="checkbox" name="platform" value="${esc(p.value)}"> ${esc(p.label)}</label>
+      <button type="button" class="placement-delete" data-id="${esc(p.id)}" title="刪除版位" aria-label="刪除版位">×</button>
+    </span>
+  `).join('');
+  container.querySelectorAll('.placement-delete').forEach(btn => {
+    btn.onclick = async () => {
+      const p = adPlacementsCache.find(x => x.id === btn.dataset.id);
+      if (!confirm(`刪除版位「${p ? p.label : ''}」？（已使用此版位的廣告文案不受影響）`)) return;
+      try {
+        await api(`/api/ad-copies?action=placements&id=${btn.dataset.id}`, { method: 'DELETE' });
+        await loadAdPlacements();
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    };
+  });
+}
+
+const adPlacementAddBtn = $('#ad-placement-add');
+const adPlacementInput = $('#ad-placement-input');
+if (adPlacementAddBtn && adPlacementInput) {
+  const submitPlacement = async () => {
+    const label = adPlacementInput.value.trim();
+    if (!label) return;
+    adPlacementAddBtn.disabled = true;
+    try {
+      await api('/api/ad-copies?action=placements', { method: 'POST', body: JSON.stringify({ label }) });
+      adPlacementInput.value = '';
+      await loadAdPlacements();
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { adPlacementAddBtn.disabled = false; }
+  };
+  adPlacementAddBtn.onclick = submitPlacement;
+  adPlacementInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submitPlacement(); } });
 }
 
 // ---------------- Meta 廣告效益驗證 ----------------
@@ -1902,10 +2099,9 @@ function adCopyCardHtml(c) {
       </div>
       <label>投放版位（可複選）
         <fieldset class="edit-platform-fieldset">
-          ${['facebook', 'instagram', 'audience_network', 'messenger'].map(v => {
-            const checked = (c.platform || '').split(',').map(s => s.trim()).includes(v);
-            const labelMap = { facebook: 'Facebook', instagram: 'Instagram', audience_network: 'Audience Network', messenger: 'Messenger' };
-            return `<label class="choice"><input type="checkbox" value="${v}" ${checked ? 'checked' : ''}> ${labelMap[v]}</label>`;
+          ${adPlacementsCache.map(p => {
+            const checked = (c.platform || '').split(',').map(s => s.trim()).includes(p.value);
+            return `<label class="choice"><input type="checkbox" value="${esc(p.value)}" ${checked ? 'checked' : ''}> ${esc(p.label)}</label>`;
           }).join('')}
         </fieldset>
       </label>
@@ -2253,7 +2449,7 @@ function dashboardProfileCardHtml(s) {
     <div class="dashboard-card-head">
       <div>
         <h3>${esc(profileLabel(p))}</h3>
-        <p class="muted">${esc(p.audience)}｜${esc(priceTierLabel(p))}</p>
+        <p class="muted">${esc(audiencesOf(p).join('、'))}｜${esc(priceTierLabel(p))}</p>
       </div>
     </div>
     <div class="dashboard-card-stats">
@@ -2333,7 +2529,9 @@ if (dashboardNewProfileBtn) {
 
 async function init() {
   await loadProfiles();
+  await loadProductSolutions();
   loadSwipes();
+  loadAdPlacements();
   // 報告資料庫原本用 <details> 展開時才 lazy load；改成側邊欄的獨立頁面之後沒有「展開」
   // 這個時機點了，直接在啟動時載入一次即可（報告數量對一般使用量來說不會大到需要真的延遲載入）。
   // renderDashboard() 需要 reportLibraryCache 已經載入好才能算出每組設定的報告數量，所以要 await。
