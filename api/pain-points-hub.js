@@ -533,11 +533,17 @@ async function handleFromSwipe(req, res, user, profileId) {
     if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
 
     const swipes = await restRequest(
-      `swipe_copies?user_id=eq.${user.id}&select=id,industry_tag,extracted_pain_points&extracted_pain_points=not.is.null`
+      `swipe_copies?user_id=eq.${user.id}&select=id,industry_tag,domain_profile_id,extracted_pain_points&extracted_pain_points=not.is.null`
     );
 
+    // 比對邏輯分兩層：
+    //   ①優先採用使用者在文案手法庫明確「歸類商品/服務」時建立的關聯（domain_profile_id），
+    //     這是精確比對，只要有標記就一定要算進來，不受下面的模糊比對規則影響。
+    //   ②沒有明確歸類的舊資料，才退回用產業／領域文字模糊比對（industry_tag 跟 domain_tag
+    //     互相包含），維持原本的行為，避免舊資料因為改版而突然完全比對不到。
     const domainNorm = norm(profile.domain_tag);
     const matched = swipes.filter(s => {
+      if (s.domain_profile_id) return s.domain_profile_id === profileId;
       const tag = norm(s.industry_tag);
       return tag && domainNorm && (tag.includes(domainNorm) || domainNorm.includes(tag));
     });
