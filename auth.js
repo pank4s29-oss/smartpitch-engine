@@ -77,7 +77,10 @@
     const signOutBtn = document.querySelector('#auth-signout');
     const signInBtn = document.querySelector('#auth-signin');
     const signUpBtn = document.querySelector('#auth-signup');
-    const composer = document.querySelector('#composer-panel');
+    // 舊版是單一 #composer-panel 包住整個工作流程；改版後拆成多個
+    // <section class="page" data-page="..."> 並統一包在 <main class="page-container"> 底下，
+    // 這裡跟著改成抓這層外層容器，避免抓到不存在的舊 id 而拿到 null。
+    const composer = document.querySelector('main.page-container');
     const loggedIn = !!session;
     const displayName = currentDisplayName();
 
