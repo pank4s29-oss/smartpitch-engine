@@ -180,6 +180,8 @@ function setProfileFormMode(mode, profile) {
     form.core_selling_point.value = profile.core_selling_point || '';
     form.solution_description.value = profile.solution_description || '';
     form.trust_proof.value = profile.trust_proof || '';
+    if (form.primary_conversion_event) form.primary_conversion_event.value = profile.primary_conversion_event || 'lead';
+    if (form.workflow_notes) form.workflow_notes.value = profile.workflow_notes || '';
     const activeConstraints = new Set(Array.isArray(profile.business_constraints) ? profile.business_constraints : []);
     $$('#profile-form input[name="constraints"]').forEach(cb => { cb.checked = activeConstraints.has(cb.value); });
     submitBtn.textContent = '更新產品／服務設定';
@@ -2053,8 +2055,11 @@ function pctLabel(v) { return v != null ? (Math.round(v * 10000) / 100) + '%' : 
 // 前面加上白話說明當作主要標籤，縮寫放在括號裡當補充，滑鼠移上去（title）還有更
 // 完整的一句話解釋，兩個地方（廣告文案卡片、效益驗證矩陣）共用同一份定義，才不會
 // 兩處措辭不一致。
+const CONVERSION_EVENT_LABELS = { lead: '名單／表單', purchase: '購買', complete_registration: '完成註冊', schedule: '預約', add_to_cart: '加入購物車' };
+function conversionEventLabel(value) { return CONVERSION_EVENT_LABELS[value] || value || '名單／表單'; }
 const METRIC_INFO = {
   ctr: { label: '點閱率', hint: '每 100 次曝光有幾次被點擊，數字越高代表廣告內容越吸引人點進去看。' },
+  cpm: { label: '千次曝光成本', hint: '每 1,000 次曝光平均花費多少廣告費，用來比較觸達成本。' },
   cpa: { label: '單次轉換成本', hint: '平均每達成一次轉換（例如一筆訂單）要花多少廣告費，數字越低越划算。' },
   cvr: { label: '轉換率', hint: '點進廣告的人裡面，有多少比例最後真的完成轉換，數字越高代表文案／頁面越有說服力。' },
   roas: { label: '廣告投報率', hint: '每花 1 元廣告費賺回幾元，數字大於 1 代表這則廣告是賺錢的。' },
@@ -2078,16 +2083,33 @@ function adCopyTagsHtml(tags) {
   `;
 }
 
+const MATCH_STATUS_INFO = {
+  unreviewed: { label: '尚未判斷', className: '' },
+  hit: { label: '命中受眾', className: 'hit' },
+  partial: { label: '部分命中', className: 'partial' },
+  missed: { label: '未命中', className: 'missed' },
+  unknown: { label: '無法判斷', className: 'unknown' },
+};
+const MATCH_REASON_OPTIONS = [
+  ['audience', '受眾設定不對'], ['situation', '情境不對'], ['pain', '痛點不對'], ['promise', '承諾太抽象'],
+  ['broad', '受眾太廣'], ['curiosity', '吸引了好奇點擊'], ['landing_page', '素材與落地頁不一致'], ['insufficient', '樣本不足'],
+];
+function matchStatusInfo(value) { return MATCH_STATUS_INFO[value] || MATCH_STATUS_INFO.unreviewed; }
+function matchStatusHtml(c) {
+  const info = matchStatusInfo(c.match_status);
+  return `<span class="ad-match-badge ${info.className}">${info.label}</span>${c.match_reason ? `<span class="muted" style="margin-left:8px">原因：${esc((MATCH_REASON_OPTIONS.find(item => item[0] === c.match_reason) || ['', c.match_reason])[1])}</span>` : ''}${c.match_notes ? `<div class="ad-match-review">${esc(c.match_notes)}</div>` : ''}`;
+}
+function matchStatusOptions(selected) {
+  return Object.entries(MATCH_STATUS_INFO).map(([value, info]) => `<option value="${value}" ${value === (selected || 'unreviewed') ? 'selected' : ''}>${info.label}</option>`).join('');
+}
+function matchReasonOptions(selected) {
+  return '<option value="">— 請選擇原因 —</option>' + MATCH_REASON_OPTIONS.map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+}
 function adCopyPerfHtml(perf) {
   if (!perf) return '<p class="muted" style="margin-top:8px">尚無成效數據，可在上方表單、CSV 或 Meta 同步中回灌。</p>';
   return `<div class="pain-meta" style="margin-top:8px">
-    <span>花費 <span class="num">${perf.spend ?? '—'}</span></span>
-    <span>曝光 <span class="num">${perf.impressions ?? '—'}</span></span>
-    <span>點擊 <span class="num">${perf.clicks ?? '—'}</span></span>
-    ${metricSpan('ctr', pctLabel(perf.ctr))}
-    ${metricSpan('cpa', perf.cpa ?? '—')}
-    ${metricSpan('cvr', pctLabel(perf.cvr))}
-    ${perf.roas != null ? metricSpan('roas', perf.roas) : ''}
+    <span>花費 <span class="num">${perf.spend ?? '—'}</span></span><span>觸達 <span class="num">${perf.reach ?? '—'}</span></span><span>曝光 <span class="num">${perf.impressions ?? '—'}</span></span><span>點擊 <span class="num">${perf.clicks ?? '—'}</span></span>
+    <span title="本次成效採計的主要轉換事件">事件：${esc(conversionEventLabel(perf.conversion_event))}</span>${metricSpan('ctr', pctLabel(perf.ctr))}${metricSpan('cpm', perf.cpm ?? '—')}${metricSpan('cpa', perf.cpa ?? '—')}${metricSpan('cvr', pctLabel(perf.cvr))}${perf.roas != null ? metricSpan('roas', perf.roas) : ''}
   </div>`;
 }
 
@@ -2097,43 +2119,23 @@ function adCopyCardHtml(c) {
   const status_ = c.tagging_error ? 'rejected' : (c.ai_tags ? 'confirmed' : 'unreviewed');
   const statusLabel = c.tagging_error ? '標籤化失敗' : (c.ai_tags ? '已標籤' : '處理中');
   return `<article class="pain-card" data-id="${esc(c.id)}">
-    <div class="pain-card-top">
-      <div><h3 style="font-size:15px">${esc(preview)}</h3></div>
-      <span class="stamp ${status_}">${statusLabel}</span>
-    </div>
+    <div class="pain-card-top"><div><h3 style="font-size:15px">${esc(preview)}</h3></div><span class="stamp ${status_}">${statusLabel}</span></div>
     ${adCopyTagsHtml(c.ai_tags)}
     ${c.tagging_error ? `<p class="muted" style="margin-top:6px">${esc(c.tagging_error)}</p>` : ''}
     ${adCopyPerfHtml(perf)}
-    <div class="pain-actions" style="margin-top:10px">
-      <button type="button" class="small ghost ad-copy-edit">編輯</button>
-      <button type="button" class="small danger ghost ad-copy-delete">刪除</button>
-    </div>
+    <div style="margin-top:8px">${matchStatusHtml(c)}</div>
+    <div class="pain-actions" style="margin-top:10px"><button type="button" class="small ghost ad-copy-edit">編輯</button><button type="button" class="small ghost ad-copy-history">查看成效歷史</button><button type="button" class="small danger ghost ad-copy-delete">刪除</button></div>
     <form class="ad-copy-edit-form pc-edit-form" hidden>
-      <div class="grid">
-        <label>主打痛點標籤<input class="edit-primary_pain_tag" value="${esc((c.ai_tags && c.ai_tags.primary_pain_tag) || '')}" placeholder="例：沒時間運動" required></label>
-        <label>次要痛點標籤（選填，最多 2 個，用逗號分隔）<input class="edit-secondary_pain_tags" value="${esc(((c.ai_tags && c.ai_tags.secondary_pain_tags) || []).join('、'))}" placeholder="例：怕踩雷、預算有限"></label>
-      </div>
-      <label>投放版位（可複選）
-        <fieldset class="edit-platform-fieldset">
-          ${adPlacementsCache.map(p => {
-            const checked = (c.platform || '').split(',').map(s => s.trim()).includes(p.value);
-            return `<label class="choice"><input type="checkbox" value="${esc(p.value)}" ${checked ? 'checked' : ''}> ${esc(p.label)}</label>`;
-          }).join('')}
-        </fieldset>
-      </label>
-      <p class="muted" style="margin:4px 0 0">文案原文與 hash 不可修改（若貼錯內容請直接刪除重新新增）；下方成效數據若留白則不會覆蓋既有數據。</p>
-      <div class="grid">
-        <label>花費<input class="edit-spend" type="number" step="0.01" placeholder="${perf && perf.spend != null ? perf.spend : '例：500'}"></label>
-        <label>曝光數<input class="edit-impressions" type="number" placeholder="${perf && perf.impressions != null ? perf.impressions : '例：10000'}"></label>
-      </div>
-      <div class="grid">
-        <label>點擊數<input class="edit-clicks" type="number" placeholder="${perf && perf.clicks != null ? perf.clicks : '例：300'}"></label>
-        <label>轉換數<input class="edit-conversions" type="number" placeholder="${perf && perf.conversions != null ? perf.conversions : '例：12'}"></label>
-      </div>
-      <div class="pain-actions">
-        <button type="submit" class="small">儲存修改</button>
-        <button type="button" class="small ghost ad-copy-edit-cancel">取消</button>
-      </div>
+      <div class="grid"><label>主打痛點標籤<input class="edit-primary_pain_tag" value="${esc((c.ai_tags && c.ai_tags.primary_pain_tag) || '')}" placeholder="例：沒時間運動" required></label><label>次要痛點標籤（選填，最多 2 個，用逗號分隔）<input class="edit-secondary_pain_tags" value="${esc(((c.ai_tags && c.ai_tags.secondary_pain_tags) || []).join('、'))}" placeholder="例：怕踩雷、預算有限"></label></div>
+      <label>素材命中狀態<select class="edit-match_status">${matchStatusOptions(c.match_status)}</select></label>
+      <label>未命中／部分命中的主要原因<select class="edit-match_reason">${matchReasonOptions(c.match_reason)}</select></label>
+      <label>檢討備註（選填）<textarea class="edit-match_notes" maxlength="500" placeholder="例：點擊多來自非目標族群，下一版改用更具體的情境開場">${esc(c.match_notes || '')}</textarea></label>
+      <label>投放版位（可複選）<fieldset class="edit-platform-fieldset">${adPlacementsCache.map(p => { const checked = (c.platform || '').split(',').map(s => s.trim()).includes(p.value); return `<label class="choice"><input type="checkbox" value="${esc(p.value)}" ${checked ? 'checked' : ''}> ${esc(p.label)}</label>`; }).join('')}</fieldset></label>
+      <p class="muted" style="margin:4px 0 0">文案原文與 hash 不可修改；成效欄位若留白則不會覆蓋既有數據。</p>
+      <div class="grid"><label>花費<input class="edit-spend" type="number" step="0.01" placeholder="${perf && perf.spend != null ? perf.spend : '例：500'}"></label><label>觸達人數<input class="edit-reach" type="number" placeholder="${perf && perf.reach != null ? perf.reach : '例：8000'}"></label><label>曝光數<input class="edit-impressions" type="number" placeholder="${perf && perf.impressions != null ? perf.impressions : '例：10000'}"></label></div>
+      <div class="grid"><label>點擊數<input class="edit-clicks" type="number" placeholder="${perf && perf.clicks != null ? perf.clicks : '例：300'}"></label><label>轉換數<input class="edit-conversions" type="number" placeholder="${perf && perf.conversions != null ? perf.conversions : '例：12'}"></label><label>轉換價值／收入<input class="edit-revenue" type="number" step="0.01" placeholder="${perf && perf.revenue != null ? perf.revenue : '例：2400'}"></label></div>
+      <div class="grid"><label>成效起日<input class="edit-period-start" type="date" value="${esc(perf && perf.reporting_period_start ? String(perf.reporting_period_start).slice(0, 10) : '')}"></label><label>成效迄日<input class="edit-period-end" type="date" value="${esc(perf && perf.reporting_period_end ? String(perf.reporting_period_end).slice(0, 10) : '')}"></label></div>
+      <div class="pain-actions"><button type="submit" class="small">儲存修改</button><button type="button" class="small ghost ad-copy-edit-cancel">取消</button></div>
     </form>
   </article>`;
 }
@@ -2142,23 +2144,28 @@ function renderAdCopyList() {
   const list = $('#ad-copy-list');
   const countEl = $('#ad-copy-count');
   if (!list) return;
-  if (countEl) countEl.textContent = adCopiesCache.length ? `共 ${adCopiesCache.length} 則廣告文案` : '';
+  const matchFilter = $('#ad-match-filter');
+  const filterValue = matchFilter ? matchFilter.value : '';
+  const visibleCopies = filterValue ? adCopiesCache.filter(copy => (copy.match_status || 'unreviewed') === filterValue) : adCopiesCache;
+  if (countEl) countEl.textContent = filterValue ? `符合條件：${visibleCopies.length}／${adCopiesCache.length} 則廣告文案` : (adCopiesCache.length ? `共 ${adCopiesCache.length} 則廣告文案` : '');
   if (!adCopiesCache.length) { list.innerHTML = '<p class="muted">尚無已匯入的廣告文案。</p>'; return; }
-  list.innerHTML = adCopiesCache.map(adCopyCardHtml).join('');
+  if (!visibleCopies.length) { list.innerHTML = '<p class="muted">目前沒有符合這個命中狀態的素材。</p>'; return; }
+  list.innerHTML = visibleCopies.map(adCopyCardHtml).join('');
   list.querySelectorAll('.ad-copy-delete').forEach((btn, i) => {
     btn.onclick = async () => {
-      const c = adCopiesCache[i];
+      const c = visibleCopies[i];
       if (!confirm('確定要刪除這則廣告文案與其成效數據嗎？此操作無法復原。')) return;
-      try {
-        await api(`/api/ad-copies/${c.id}`, { method: 'DELETE' });
-        await loadAdCopies();
-      } catch (err) { setStatus('⚠ ' + err.message, true); }
+      try { await api(`/api/ad-copies/${c.id}`, { method: 'DELETE' }); await loadAdCopies(); }
+      catch (err) { setStatus('⚠ ' + err.message, true); }
     };
+  });
+  list.querySelectorAll('.ad-copy-history').forEach((btn, i) => {
+    btn.onclick = () => openAdHistory(visibleCopies[i]);
   });
   // 編輯：修正 AI 標籤化誤判的痛點標籤/投放版位，或手動回填成效數據，
   // 對應後端新增的 PATCH /api/ad-copies/:id。
   list.querySelectorAll('.ad-copy-edit').forEach((btn, i) => {
-    const c = adCopiesCache[i];
+    const c = visibleCopies[i];
     const article = btn.closest('.pain-card');
     const form = article.querySelector('.ad-copy-edit-form');
     btn.onclick = () => { form.hidden = false; };
@@ -2171,16 +2178,23 @@ function renderAdCopyList() {
       const secondary = form.querySelector('.edit-secondary_pain_tags').value
         .split(/[、,，]/).map(s => s.trim()).filter(Boolean).slice(0, 2);
       const spend = form.querySelector('.edit-spend').value;
+      const reach = form.querySelector('.edit-reach').value;
       const impressions = form.querySelector('.edit-impressions').value;
       const clicks = form.querySelector('.edit-clicks').value;
       const conversions = form.querySelector('.edit-conversions').value;
-      const hasPerf = spend || impressions || clicks || conversions;
+      const revenue = form.querySelector('.edit-revenue').value;
+      const periodStart = form.querySelector('.edit-period-start').value;
+      const periodEnd = form.querySelector('.edit-period-end').value;
+      const hasPerf = spend || reach || impressions || clicks || conversions || revenue || periodStart || periodEnd;
       const body = {
         platform: platforms.length ? platforms.join(',') : null,
         primary_pain_tag: form.querySelector('.edit-primary_pain_tag').value.trim(),
         secondary_pain_tags: secondary,
+        match_status: form.querySelector('.edit-match_status').value,
+        match_reason: form.querySelector('.edit-match_reason').value,
+        match_notes: form.querySelector('.edit-match_notes').value.trim(),
       };
-      if (hasPerf) body.performance = { spend: spend || undefined, impressions: impressions || undefined, clicks: clicks || undefined, conversions: conversions || undefined };
+      if (hasPerf) body.performance = { spend: spend || undefined, reach: reach || undefined, impressions: impressions || undefined, clicks: clicks || undefined, conversions: conversions || undefined, revenue: revenue || undefined, reporting_period_start: periodStart || undefined, reporting_period_end: periodEnd || undefined, conversion_event: (profilesCache.find(p => p.id === currentProfileId) || {}).primary_conversion_event || 'lead' };
       try {
         await api(`/api/ad-copies/${c.id}`, { method: 'PATCH', body: JSON.stringify(body) });
         setStatus('已更新廣告文案。');
@@ -2193,6 +2207,35 @@ function renderAdCopyList() {
   });
 }
 
+function historyMetric(value, percent = false) {
+  if (value === null || value === undefined || value === '') return '—';
+  return percent ? pctLabel(Number(value)) : String(value);
+}
+async function openAdHistory(adCopy) {
+  const modal = $('#ad-history-modal');
+  const content = $('#ad-history-content');
+  const subtitle = $('#ad-history-subtitle');
+  if (!modal || !content || !adCopy) return;
+  modal.hidden = false;
+  subtitle.textContent = (adCopy.raw_content || '').slice(0, 100) + ((adCopy.raw_content || '').length > 100 ? '…' : '');
+  content.innerHTML = '<p class="muted">正在載入成效歷史…</p>';
+  try {
+    const result = await api(`/api/ad-copies/${encodeURIComponent(adCopy.id)}/history`);
+    const history = result.history || [];
+    if (!history.length) { content.innerHTML = '<p class="muted">目前尚無歷史成效。下一次回灌 CSV 或 Meta 同步後，系統會保存該日期區間的快照。</p>'; return; }
+    const totalSpend = history.reduce((sum, row) => sum + (Number(row.spend) || 0), 0);
+    const totalConversions = history.reduce((sum, row) => sum + (Number(row.conversions) || 0), 0);
+    content.innerHTML = `<div class="ad-history-summary"><div class="ad-history-stat"><span class="num">${history.length}</span><small>歷史區間</small></div><div class="ad-history-stat"><span class="num">${totalSpend.toFixed(2)}</span><small>累計花費</small></div><div class="ad-history-stat"><span class="num">${totalConversions || '—'}</span><small>累計轉換</small></div></div><div class="ad-history-table-wrap"><table class="ad-history-table"><thead><tr><th>日期區間</th><th>事件</th><th>花費</th><th>觸達</th><th>曝光</th><th>CTR</th><th>CPA</th><th>CVR</th><th>ROAS</th></tr></thead><tbody>${history.map(row => `<tr><td>${esc(row.reporting_period_start || '—')} ${row.reporting_period_end && row.reporting_period_end !== row.reporting_period_start ? '～ ' + esc(row.reporting_period_end) : ''}</td><td>${esc(conversionEventLabel(row.conversion_event))}</td><td>${historyMetric(row.spend)}</td><td>${historyMetric(row.reach)}</td><td>${historyMetric(row.impressions)}</td><td>${historyMetric(row.ctr, true)}</td><td>${historyMetric(row.cpa)}</td><td>${historyMetric(row.cvr, true)}</td><td>${historyMetric(row.roas)}</td></tr>`).join('')}</tbody></table></div>`;
+  } catch (err) { content.innerHTML = `<p class="muted">${esc(err.message || '無法讀取成效歷史。')}</p>`; }
+}
+const adHistoryClose = $('#ad-history-close');
+if (adHistoryClose) adHistoryClose.onclick = () => { const modal = $('#ad-history-modal'); if (modal) modal.hidden = true; };
+const adHistoryModal = $('#ad-history-modal');
+if (adHistoryModal) adHistoryModal.addEventListener('click', e => { if (e.target === adHistoryModal) adHistoryModal.hidden = true; });
+
+const adMatchFilter = $('#ad-match-filter');
+if (adMatchFilter) adMatchFilter.addEventListener('change', renderAdCopyList);
+
 const adCopyForm = $('#ad-copy-form');
 if (adCopyForm) {
   adCopyForm.addEventListener('submit', async e => {
@@ -2203,14 +2246,16 @@ if (adCopyForm) {
     // 所以要另外把所有勾選的 checkbox 收集起來，合併成逗號分隔的字串存進既有的 platform 欄位
     // （後端 schema 沒有改動，這裡不需要動 API）。
     const platforms = Array.from(e.target.querySelectorAll('input[name="platform"]:checked')).map(el => el.value);
-    const hasPerf = data.spend || data.impressions || data.clicks || data.conversions;
+    const hasPerf = data.spend || data.reach || data.impressions || data.clicks || data.conversions || data.revenue || data.reporting_period_start || data.reporting_period_end;
     const body = {
       domain_profile_id: currentProfileId,
       platform: platforms.length ? platforms.join(',') : undefined,
       raw_content: data.raw_content,
       performance: hasPerf ? {
-        spend: data.spend || undefined, impressions: data.impressions || undefined,
-        clicks: data.clicks || undefined, conversions: data.conversions || undefined,
+        spend: data.spend || undefined, reach: data.reach || undefined, impressions: data.impressions || undefined,
+        clicks: data.clicks || undefined, conversions: data.conversions || undefined, revenue: data.revenue || undefined,
+        reporting_period_start: data.reporting_period_start || undefined, reporting_period_end: data.reporting_period_end || undefined,
+        conversion_event: (profilesCache.find(p => p.id === currentProfileId) || {}).primary_conversion_event || 'lead',
         source: 'manual',
       } : undefined,
     };
@@ -2261,9 +2306,13 @@ function renderAdCsvMapping() {
   const guessTextCol = guess(/文案|內容|body|ad\s*text|creative/i) || adCsvHeaders[0];
   const guessAdIdCol = guess(/ad.?id|廣告\s*id/i);
   const guessSpendCol = guess(/花費|金額|spend|cost/i);
+  const guessReachCol = guess(/觸達|reach/i);
   const guessImpCol = guess(/曝光|impress/i);
   const guessClickCol = guess(/點擊|click/i);
   const guessConvCol = guess(/轉換|purchase|lead|conversion/i);
+  const guessRevenueCol = guess(/收入|營收|營業額|revenue|value/i);
+  const guessStartCol = guess(/開始|起日|date.?start|期間開始/i);
+  const guessEndCol = guess(/結束|迄日|date.?stop|期間結束/i);
 
   adCsvMappingPanel.innerHTML = `
     <p class="muted" style="margin-top:14px">共讀到 <span class="num">${adCsvRows.length}</span> 列資料，請確認欄位對應：</p>
@@ -2273,11 +2322,17 @@ function renderAdCsvMapping() {
     </div>
     <div class="grid">
       <label>花費欄位（選填）<select class="ad-csv-map" data-field="spend">${adCsvColumnOptions(guessSpendCol)}</select></label>
+      <label>觸達欄位（選填）<select class="ad-csv-map" data-field="reach">${adCsvColumnOptions(guessReachCol)}</select></label>
       <label>曝光欄位（選填）<select class="ad-csv-map" data-field="impressions">${adCsvColumnOptions(guessImpCol)}</select></label>
       <label>點擊欄位（選填）<select class="ad-csv-map" data-field="clicks">${adCsvColumnOptions(guessClickCol)}</select></label>
       <label>轉換欄位（選填）<select class="ad-csv-map" data-field="conversions">${adCsvColumnOptions(guessConvCol)}</select></label>
+      <label>轉換價值／收入欄位（選填）<select class="ad-csv-map" data-field="revenue">${adCsvColumnOptions(guessRevenueCol)}</select></label>
     </div>
-    <p class="muted" style="margin:2px 0 12px">同一份文案的內容若跟文案庫裡已有的一字不差，會直接更新成效、不會重複呼叫 AI。</p>
+    <div class="grid">
+      <label>成效起日欄位（選填）<select class="ad-csv-map" data-field="reporting_period_start">${adCsvColumnOptions(guessStartCol)}</select></label>
+      <label>成效迄日欄位（選填）<select class="ad-csv-map" data-field="reporting_period_end">${adCsvColumnOptions(guessEndCol)}</select></label>
+    </div>
+    <p class="muted" style="margin:2px 0 12px">有日期區間時會保存為歷史快照；同一份文案的內容若跟文案庫裡已有的一字不差，會直接更新成效、不會重複呼叫 AI。</p>
     <button type="button" id="ad-csv-import-confirm" class="secondary" style="margin-top:4px">確認匯入這 ${adCsvRows.length} 筆</button>
   `;
   $('#ad-csv-import-confirm').onclick = submitAdCsvImport;
@@ -2294,15 +2349,19 @@ async function submitAdCsvImport() {
   const map = currentAdCsvMapping();
   if (!map.raw_content) return setStatus('⚠ 請先指定「文案內容欄位」。', true);
 
-  const hasPerfCols = map.spend || map.impressions || map.clicks || map.conversions;
+  const hasPerfCols = map.spend || map.reach || map.impressions || map.clicks || map.conversions || map.revenue || map.reporting_period_start || map.reporting_period_end;
   const items = adCsvRows.map(r => ({
     raw_content: r[map.raw_content] || '',
     meta_ad_id: map.meta_ad_id ? r[map.meta_ad_id] : undefined,
     performance: hasPerfCols ? {
       spend: map.spend ? r[map.spend] : undefined,
+      reach: map.reach ? r[map.reach] : undefined,
       impressions: map.impressions ? r[map.impressions] : undefined,
       clicks: map.clicks ? r[map.clicks] : undefined,
       conversions: map.conversions ? r[map.conversions] : undefined,
+      revenue: map.revenue ? r[map.revenue] : undefined,
+      reporting_period_start: map.reporting_period_start ? r[map.reporting_period_start] : undefined,
+      reporting_period_end: map.reporting_period_end ? r[map.reporting_period_end] : undefined,
       source: 'csv',
     } : undefined,
   })).filter(it => it.raw_content && it.raw_content.trim());
@@ -2319,7 +2378,7 @@ async function submitAdCsvImport() {
       const chunk = items.slice(i, i + CHUNK_SIZE);
       const result = await api('/api/ad-copies/batch-import', {
         method: 'POST',
-        body: JSON.stringify({ domain_profile_id: currentProfileId, items: chunk }),
+        body: JSON.stringify({ domain_profile_id: currentProfileId, conversion_event: (profilesCache.find(p => p.id === currentProfileId) || {}).primary_conversion_event || 'lead', items: chunk }),
       });
       created += result.created; reused += result.reused; aiCalls += result.ai_calls;
     }
@@ -2391,7 +2450,7 @@ function renderMatrix(result) {
 
   container.innerHTML = `
     ${report.note ? `<p class="muted" style="margin-bottom:14px">${esc(report.note)}</p>` : ''}
-    <p class="muted" style="margin-bottom:10px">依據 ${report.based_on_ad_copies} 則有成效數據的廣告文案（文案庫共 ${report.total_tagged_ad_copies} 則）計算，按加權點閱率（CTR）由高到低排序。</p>
+    <p class="muted" style="margin-bottom:10px">主要轉換事件：<strong>${esc(conversionEventLabel(report.conversion_event))}</strong>。依據 ${report.based_on_ad_copies} 則有成效數據的廣告文案（文案庫共 ${report.total_tagged_ad_copies} 則）計算，按加權點閱率（CTR）由高到低排序。</p>
     <h3 style="margin:16px 0 8px">痛點轉換矩陣</h3>
     <div class="r-breakdown">${painRows || '<p class="muted">尚無資料。</p>'}</div>
     <h3 style="margin:20px 0 8px">高點閱率結構模板</h3>
@@ -2436,88 +2495,92 @@ function selectProfileAndGoTo(id, page) {
 }
 
 async function dashboardProfileStats(profile) {
-  const stats = { profile, painTotal: 0, painConfirmed: 0, adCopyCount: 0 };
   try {
-    const points = await api(`/api/domain-profiles/${profile.id}/pain-points`);
-    stats.painTotal = points.length;
-    stats.painConfirmed = points.filter(p => p.review_status === 'confirmed' || p.review_status === 'edited').length;
-  } catch (e) { /* 單組設定的痛點載入失敗不擋整個總覽頁 */ }
-  try {
-    const ads = await api(`/api/ad-copies?domain_profile_id=${profile.id}`);
-    stats.adCopyCount = ads.length;
-  } catch (e) { /* 同上，不擋整頁 */ }
-  return stats;
+    const workflow = await api(`/api/workflow-status?domain_profile_id=${encodeURIComponent(profile.id)}`);
+    const stats = workflow.stats || {};
+    return { profile, workflow, painTotal: stats.pain_total || 0, painConfirmed: stats.pain_confirmed || 0, adCopyCount: stats.ad_total || 0 };
+  } catch (e) {
+    // migration 尚未套用或工作流 API 暫時不可用時，保留原本總覽資料，不讓新功能阻斷舊流程。
+    const fallback = { profile, workflow: null, painTotal: 0, painConfirmed: 0, adCopyCount: 0 };
+    try {
+      const points = await api(`/api/domain-profiles/${profile.id}/pain-points`);
+      fallback.painTotal = points.length;
+      fallback.painConfirmed = points.filter(p => p.review_status === 'confirmed' || p.review_status === 'edited').length;
+    } catch (_) { /* 單組設定的痛點載入失敗不擋整個總覽頁 */ }
+    try { fallback.adCopyCount = (await api(`/api/ad-copies?domain_profile_id=${profile.id}`)).length; } catch (_) { /* 同上 */ }
+    return fallback;
+  }
 }
-
+function workflowProgressHtml(workflow) {
+  if (!workflow) return '<p class="muted">工作流進度暫時無法讀取，仍可使用各功能頁。</p>';
+  const progress = workflow.progress || {};
+  const next = workflow.next_step || {};
+  const alerts = workflow.quality && workflow.quality.alerts ? workflow.quality.alerts : [];
+  const alertLabel = alerts.length ? `${alerts.length} 個資料品質提醒` : '資料品質目前良好';
+  return `<div class="dashboard-progress">
+    <div class="dashboard-progress-head"><span>工作流進度</span><b>${progress.percent || 0}%</b></div>
+    <div class="progress-track"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, progress.percent || 0))}%"></div></div>
+    <div class="dashboard-progress-steps">${(progress.items || []).map(item => `<span class="${item.done ? 'done' : ''}">${item.done ? '✓' : '○'} ${esc(item.label)}</span>`).join('')}</div>
+    <div class="dashboard-next-step"><span class="eyebrow">建議下一步</span><strong>${esc(next.label || '查看工作台')}</strong><small>${esc(next.reason || '')}</small><button type="button" class="small secondary dc-next-step" data-page="${esc(next.page || 'dashboard')}">前往處理 →</button></div>
+    <div class="dashboard-quality ${workflow.quality && workflow.quality.level === 'warning' ? 'has-warning' : ''}"><strong>${esc(alertLabel)}</strong>${alerts.slice(0, 3).map(alert => `<div class="quality-alert"><span>${alert.level === 'warning' ? '!' : 'i'}</span><div><b>${esc(alert.title)}</b><small>${esc(alert.detail)}</small></div></div>`).join('')}</div>
+  </div>`;
+}
 function dashboardProfileCardHtml(s) {
   const p = s.profile;
   const confirmRatio = s.painTotal ? `${s.painConfirmed}／${s.painTotal}` : '0';
   return `<article class="dashboard-card" data-id="${esc(p.id)}">
     <div class="dashboard-card-head">
-      <div>
-        <h3>${esc(profileLabel(p))}</h3>
-        <p class="muted">${esc(audiencesOf(p).join('、'))}｜${esc(priceTierLabel(p))}</p>
-      </div>
+      <div><h3>${esc(profileLabel(p))}</h3><p class="muted">${esc(audiencesOf(p).join('、'))}｜${esc(priceTierLabel(p))}</p></div>
     </div>
     <div class="dashboard-card-stats">
       <div class="dashboard-stat"><span class="num">${confirmRatio}</span><small>痛點（已確認／總數）</small></div>
       <div class="dashboard-stat"><span class="num">${s.adCopyCount}</span><small>追蹤中廣告文案</small></div>
+      <div class="dashboard-stat"><span class="num">${s.workflow ? `${s.workflow.stats.ad_with_performance || 0}` : '—'}</span><small>已有成效資料</small></div>
     </div>
-    <p class="muted dashboard-card-updated">報告會依目前痛點與潛在受眾地圖即時整理。</p>
-    <div class="pain-actions">
-      <button type="button" class="small secondary dc-feedback">語料與痛點 →</button>
-      <button type="button" class="small ghost dc-report">產出分析報告</button>
-      <button type="button" class="small ghost dc-edit">編輯設定</button>
-    </div>
+    ${workflowProgressHtml(s.workflow)}
+    <p class="muted dashboard-card-updated">報告資料庫：${s.workflow ? `${s.workflow.stats.report_total || 0} 份` : '—'}</p>
+    <div class="pain-actions"><button type="button" class="small secondary dc-feedback">語料與痛點 →</button><button type="button" class="small ghost dc-report">產出分析報告</button><button type="button" class="small ghost dc-edit">編輯設定</button></div>
   </article>`;
 }
-
 async function renderDashboard() {
   const empty = $('#dashboard-empty');
   const statsEl = $('#dashboard-stats');
+  const workflowEl = $('#dashboard-workflow');
   const gridEl = $('#dashboard-profile-grid');
-  if (!statsEl || !gridEl) return; // 頁面元素還沒渲染出來（理論上不會發生，防呆用）
-
+  if (!statsEl || !gridEl) return;
   if (!profilesCache.length) {
     if (empty) empty.hidden = false;
     statsEl.hidden = true;
+    if (workflowEl) workflowEl.hidden = true;
     gridEl.innerHTML = '';
     return;
   }
   if (empty) empty.hidden = true;
   statsEl.hidden = false;
-  gridEl.innerHTML = '<p class="muted">正在彙整各產品/服務設定的統計資料…</p>';
-
+  if (workflowEl) { workflowEl.hidden = false; workflowEl.innerHTML = '<p class="muted">正在彙整工作流進度與資料品質…</p>'; }
+  gridEl.innerHTML = '<p class="muted">正在彙整各產品／服務設定的統計資料…</p>';
   const allStats = await Promise.all(profilesCache.map(dashboardProfileStats));
-
   const totalPain = allStats.reduce((sum, s) => sum + s.painTotal, 0);
   const totalConfirmed = allStats.reduce((sum, s) => sum + s.painConfirmed, 0);
   const totalAdCopies = allStats.reduce((sum, s) => sum + s.adCopyCount, 0);
-  statsEl.innerHTML = `
-    <div class="dashboard-stat-card"><span class="num">${profilesCache.length}</span><small>產品／服務設定</small></div>
-    <div class="dashboard-stat-card"><span class="num">${totalConfirmed}／${totalPain}</span><small>累積痛點（已確認／總數）</small></div>
-    <div class="dashboard-stat-card"><span class="num">${totalAdCopies}</span><small>追蹤中廣告文案</small></div>
-  `;
-
+  const totalPerformance = allStats.reduce((sum, s) => sum + (s.workflow ? s.workflow.stats.ad_with_performance || 0 : 0), 0);
+  const avgProgress = allStats.filter(s => s.workflow).length ? Math.round(allStats.filter(s => s.workflow).reduce((sum, s) => sum + (s.workflow.progress.percent || 0), 0) / allStats.filter(s => s.workflow).length) : null;
+  statsEl.innerHTML = `<div class="dashboard-stat-card"><span class="num">${profilesCache.length}</span><small>產品／服務設定</small></div><div class="dashboard-stat-card"><span class="num">${totalConfirmed}／${totalPain}</span><small>累積痛點（已確認／總數）</small></div><div class="dashboard-stat-card"><span class="num">${totalAdCopies}</span><small>追蹤中廣告文案</small></div><div class="dashboard-stat-card"><span class="num">${totalPerformance}</span><small>已有成效資料的素材</small></div>`;
+  if (workflowEl) workflowEl.innerHTML = `<div class="dashboard-workflow-summary"><div><span class="eyebrow">WORKFLOW HEALTH</span><h2>目前平均進度 ${avgProgress === null ? '—' : avgProgress + '%'}</h2><p class="muted">先完成資料品質提醒，再做下一輪廣告實驗，避免只用單一指標判斷素材好壞。</p></div><div class="dashboard-workflow-actions"><button type="button" class="small secondary" id="dashboard-go-reports">查看報告資料庫 →</button></div></div>`;
+  if ($('#dashboard-go-reports')) $('#dashboard-go-reports').onclick = () => window.goToPage && window.goToPage('reports');
   gridEl.innerHTML = allStats.map(dashboardProfileCardHtml).join('');
   gridEl.querySelectorAll('.dashboard-card').forEach(card => {
     const id = card.dataset.id;
     const s = allStats.find(x => x.profile.id === id);
     card.querySelector('.dc-feedback').onclick = () => selectProfileAndGoTo(id, 'feedback');
-    card.querySelector('.dc-edit').onclick = () => {
-      selectProfileAndGoTo(id, 'profile');
-      const profile = profilesCache.find(p => p.id === id);
-      if (profile) setProfileFormMode('edit', profile);
-    };
+    card.querySelector('.dc-edit').onclick = () => { selectProfileAndGoTo(id, 'profile'); const profile = profilesCache.find(p => p.id === id); if (profile) setProfileFormMode('edit', profile); };
     const reportBtn = card.querySelector('.dc-report');
-    if (reportBtn) {
-      reportBtn.onclick = () => {
-        selectProfileAndGoTo(id, 'segments');
-        setTimeout(() => { const generateBtn = $('#generate-report-btn'); if (generateBtn) generateBtn.click(); }, 80);
-      };
-    }
+    if (reportBtn) reportBtn.onclick = () => { selectProfileAndGoTo(id, 'segments'); setTimeout(() => { const generateBtn = $('#generate-report-btn'); if (generateBtn) generateBtn.click(); }, 80); };
+    const nextBtn = card.querySelector('.dc-next-step');
+    if (nextBtn && s.workflow && s.workflow.next_step) nextBtn.onclick = () => selectProfileAndGoTo(id, s.workflow.next_step.page || 'dashboard');
   });
 }
+
 
 const dashboardNewProfileBtn = $('#dashboard-new-profile-btn');
 if (dashboardNewProfileBtn) {
@@ -2527,12 +2590,32 @@ if (dashboardNewProfileBtn) {
   };
 }
 
+let initializedAuthEmail = null;
+let initPromise = null;
 async function init() {
-  await loadProfiles();
-  await loadProductSolutions();
-  loadSwipes();
-  loadAdPlacements();
-  await loadReportLibrary();
-  renderDashboard();
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    await loadProfiles();
+    await loadProductSolutions();
+    loadSwipes();
+    loadAdPlacements();
+    await loadReportLibrary();
+    renderDashboard();
+  })();
+  try { await initPromise; } finally { initPromise = null; }
 }
+window.addEventListener('auth:change', event => {
+  const detail = event.detail || {};
+  if (detail.loggedIn && detail.email && detail.email !== initializedAuthEmail) {
+    initializedAuthEmail = detail.email;
+    init();
+  } else if (!detail.loggedIn) {
+    initializedAuthEmail = null;
+    profilesCache = [];
+    reportLibraryCache = [];
+    currentProfileId = null;
+    clearReportEditor();
+    renderDashboard();
+  }
+});
 if (window.authReady) window.authReady.then(init); else init();
