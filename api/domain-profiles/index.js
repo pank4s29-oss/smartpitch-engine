@@ -2,6 +2,33 @@ const { getUserFromRequest, restRequest, sendError } = require('../_lib/supabase
 
 const norm = s => (s || '').trim().toLowerCase();
 
+// 目標受眾改為可複選陣列：統一在這裡做清理（trim、去空字串、去重複），
+// 前端可能傳來字串（單一受眾，向後相容）或陣列（多個受眾），這裡一律正規化成
+// 一個去重過、有序的字串陣列，避免髒資料（例如重複新增同一個受眾兩次）寫進資料庫。
+function normalizeAudiences(input) {
+  const arr = Array.isArray(input) ? input : (input ? [input] : []);
+  const seen = new Set();
+  const cleaned = [];
+  for (const a of arr) {
+    const trimmed = (a || '').trim();
+    if (!trimmed) continue;
+    const key = norm(trimmed);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(trimmed);
+  }
+  return cleaned;
+}
+
+// 兩組受眾陣列是否視為「相同」：忽略大小寫／前後空白／順序，比較正規化後的集合。
+function sameAudienceSet(a, b) {
+  const setA = new Set((a || []).map(norm));
+  const setB = new Set((b || []).map(norm));
+  if (setA.size !== setB.size) return false;
+  for (const v of setA) if (!setB.has(v)) return false;
+  return true;
+}
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
@@ -10,26 +37,28 @@ module.exports = async (req, res) => {
 
   if (req.method === 'POST') {
     const {
-      domain_tag, audience, price_tier, constraints,
+      domain_tag, audience, audiences, price_tier, constraints,
       product_name, core_selling_point, solution_description, trust_proof,
     } = req.body || {};
-    if (!domain_tag || !audience || !price_tier) {
-      return sendError(res, 400, '請填寫產業／領域、目標受眾與價格帶。');
+    // audiences 是新欄位（陣列）；audience（單一字串）保留相容，若前端還沒更新也不會壞掉。
+    const audienceList = normalizeAudiences(audiences !== undefined ? audiences : audience);
+    if (!domain_tag || !audienceList.length || !price_tier) {
+      return sendError(res, 400, '請填寫產業／領域、至少一個目標受眾與價格帶。');
     }
     if (!product_name || !solution_description) {
       return sendError(res, 400, '請填寫產品／服務名稱與解決方案說明，這是後續萃取痛點與產出報告會用到的核心資訊。');
     }
     try {
-      // 重複偵測：同一使用者底下，領域＋受眾（忽略大小寫與前後空白）相同就視為重複，
+      // 重複偵測：同一使用者底下，領域＋受眾組合（忽略大小寫、前後空白與順序）相同就視為重複，
       // 不直接建立新的一筆，而是回傳既有那筆讓前端詢問使用者是否改用它。
-      const existing = await restRequest(`domain_profiles?user_id=eq.${user.id}&select=id,domain_tag,audience`);
-      const dup = existing.find(p => norm(p.domain_tag) === norm(domain_tag) && norm(p.audience) === norm(audience));
+      const existing = await restRequest(`domain_profiles?user_id=eq.${user.id}&select=id,domain_tag,audiences`);
+      const dup = existing.find(p => norm(p.domain_tag) === norm(domain_tag) && sameAudienceSet(p.audiences, audienceList));
       if (dup) {
         return res.status(409).json({
           error: '已經有一組領域／受眾完全相同的設定了。',
           duplicate: true,
           existing_id: dup.id,
-          existing_label: `${dup.domain_tag}／${dup.audience}`,
+          existing_label: `${dup.domain_tag}／${(dup.audiences || []).join('、')}`,
         });
       }
 
@@ -39,7 +68,7 @@ module.exports = async (req, res) => {
         body: {
           user_id: user.id,
           domain_tag,
-          audience,
+          audiences: audienceList,
           price_tier,
           business_constraints: constraints || [],
           product_name,
@@ -89,12 +118,16 @@ module.exports = async (req, res) => {
   if (req.method === 'PATCH') {
     if (!id) return sendError(res, 400, '缺少 id。');
     const {
-      domain_tag, audience, price_tier, constraints,
+      domain_tag, audience, audiences, price_tier, constraints,
       product_name, core_selling_point, solution_description, trust_proof,
     } = req.body || {};
     const patch = {};
     if (domain_tag !== undefined) patch.domain_tag = domain_tag;
-    if (audience !== undefined) patch.audience = audience;
+    if (audiences !== undefined || audience !== undefined) {
+      const audienceList = normalizeAudiences(audiences !== undefined ? audiences : audience);
+      if (!audienceList.length) return sendError(res, 400, '至少需要保留一個目標受眾。');
+      patch.audiences = audienceList;
+    }
     if (price_tier !== undefined) patch.price_tier = price_tier;
     // business_constraints（呈現媒介限制，如「不露臉」「不使用短影音」）先前只有在建立時會寫入，
     // 編輯既有設定時漏掉了這個欄位，導致使用者事後修改限制條件永遠不會生效。
