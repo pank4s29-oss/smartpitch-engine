@@ -11,8 +11,7 @@
 <button type="button" class="nav-item" data-page="profile"><span class="nav-item-icon" aria-hidden="true">01</span>產品／服務設定</button>
 <button type="button" class="nav-item nav-item-scoped" data-page="feedback"><span class="nav-item-icon" aria-hidden="true">02</span>語料與痛點</button>
 <button type="button" class="nav-item nav-item-scoped" data-page="segments"><span class="nav-item-icon" aria-hidden="true">03</span>潛在受眾地圖</button>
-<button type="button" class="nav-item nav-item-scoped" data-page="report"><span class="nav-item-icon" aria-hidden="true">04</span>洞察報告</button>
-<button type="button" class="nav-item nav-item-scoped" data-page="adcopies"><span class="nav-item-icon" aria-hidden="true">05</span>Meta 廣告效益</button>
+<button type="button" class="nav-item nav-item-scoped" data-page="adcopies"><span class="nav-item-icon" aria-hidden="true">04</span>Meta 廣告效益</button>
 <hr class="sidebar-divider">
 <button type="button" class="nav-item" data-page="library"><span class="nav-item-icon" aria-hidden="true">◍</span>報告資料庫</button>
 <button type="button" class="nav-item" data-page="swipe"><span class="nav-item-icon" aria-hidden="true">◍</span>產業文案手法庫</button>
@@ -224,16 +223,8 @@
 <div id="segments-result"><p class="muted">尚未分析。點擊「分析潛在受眾」，系統會根據目前的痛點清單（已駁回者不計入）反推可能的受眾族群。</p></div>
 </section>
 
-</div>
-</section>
-
-<section class="page" data-page="report" id="page-report">
-<p class="profile-required-hint muted">請先在「產品／服務設定」頁面選擇或建立一組設定。</p>
-<div class="requires-profile">
-
 <section class="panel">
-
-<div class="step-heading"><b>04</b><div><h2>產出洞察報告</h2><p>彙整目前所有痛點的驗證狀態、覆蓋率與風險提示。</p></div></div>
+<div class="step-heading"><b>04</b><div><h2>產出分析報告與匯出</h2><p>彙整目前所有痛點的驗證狀態、覆蓋率與風險提示，並可將完整報告下載成 Word 文件離線保存或寄送客戶。</p></div></div>
 <button type="button" id="generate-report-btn">產出報告 →</button>
 <div id="report-history" class="muted" style="margin-top:14px"></div>
 </section>
@@ -447,7 +438,10 @@
 <div class="step-heading">
 <b>&#9679;</b>
 <div><h2>洞察報告</h2><p class="r-meta"></p></div>
-<div class="step-actions"><button type="button" class="ghost small r-print">列印／匯出 PDF</button></div>
+<div class="step-actions">
+<button type="button" class="ghost small r-export-docx">匯出 Word 文件 →</button>
+<button type="button" class="ghost small r-print">列印／匯出 PDF</button>
+</div>
 </div>
 <div class="narrative r-narrative"></div>
 <div class="stat-grid r-stats"></div>
