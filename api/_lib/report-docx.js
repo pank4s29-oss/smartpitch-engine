@@ -37,7 +37,6 @@ function heading(D, text, level) {
 function card(D, paragraphs) {
   return new D.Table({
     width: { size: 100, type: D.WidthType.PERCENTAGE },
-    layout: D.TableLayoutType ? D.TableLayoutType.FIXED : undefined,
     borders: {
       top: { style: D.BorderStyle.SINGLE, size: 4, color: 'D4E1DA' },
       bottom: { style: D.BorderStyle.SINGLE, size: 4, color: 'D4E1DA' },
@@ -123,8 +122,7 @@ async function buildReportDocx(data, meta) {
       children,
     }],
     styles: {
-      default: { document: { run: { font: 'Microsoft JhengHei', size: 22 }, paragraph: { spacing: { line: 300 } } } },
-      paragraphStyles: [{ id: 'Normal', name: 'Normal', run: { font: 'Microsoft JhengHei', size: 22 }, paragraph: { spacing: { line: 300, after: 120 } } }],
+      default: { document: { run: { font: 'Microsoft JhengHei', size: 22 } } },
     },
   }));
 }
