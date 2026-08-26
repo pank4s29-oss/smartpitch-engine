@@ -9,7 +9,7 @@ const { normalizeImage, ocrImageToText } = require('./_lib/vision');
 
 const AI_BUDGET_MS = Number(process.env.SWIPE_AI_BUDGET_MS || 25000);
 const TEMPLATE_AI_BUDGET_MS = Number(process.env.SWIPE_TEMPLATE_AI_BUDGET_MS || 25000);
-const EDITABLE_FIELDS = ['industry_tag', 'framework_tag', 'emotion_tags', 'angle_type', 'block_breakdown', 'raw_content', 'extracted_pain_points'];
+const EDITABLE_FIELDS = ['industry_tag', 'framework_tag', 'emotion_tags', 'angle_type', 'block_breakdown', 'raw_content', 'extracted_pain_points', 'domain_profile_id'];
 
 // 分析一篇廣告文案，回傳結構化結果。handleCreate（第一次分析）跟 handleReanalyze
 // （用新邏輯重跑舊資料）共用同一套邏輯，避免兩處各寫一次 Prompt 之後不小心兜不起來。
@@ -224,12 +224,13 @@ async function handleTemplate(req, res, user, id) {
 // 單純 null／not null，PostgREST 的 filter 語法不好表達，所以篩選條件本身丟給資料庫做，
 // 這一項留在應用層做最後過濾——量體不大（單一使用者的手法庫），效能可以接受。
 async function handleList(req, res, user) {
-  const { q, industry_tag, framework_tag, angle_type, has_pain_points } = req.query || {};
+  const { q, industry_tag, framework_tag, angle_type, has_pain_points, domain_profile_id } = req.query || {};
   try {
     let query = `swipe_copies?user_id=eq.${user.id}&select=*&order=created_at.desc`;
     if (industry_tag) query += `&industry_tag=eq.${encodeURIComponent(industry_tag)}`;
     if (framework_tag) query += `&framework_tag=eq.${encodeURIComponent(framework_tag)}`;
     if (angle_type) query += `&angle_type=eq.${encodeURIComponent(angle_type)}`;
+    if (domain_profile_id) query += `&domain_profile_id=eq.${encodeURIComponent(domain_profile_id)}`;
     if (q && q.trim()) query += `&raw_content=ilike.${encodeURIComponent('*' + q.trim() + '*')}`;
 
     let items = await restRequest(query);
@@ -244,6 +245,29 @@ async function handleList(req, res, user) {
 
 // 篩選下拉選單的候選值：只回傳這個使用者的手法庫裡「實際存在」的產業／框架／角度，
 // 不用寫死清單，也不會出現選了之後篩不出任何結果的選項。
+// 供「歸類商品/服務」下拉選單使用：文案手法庫是跨產品/服務設定瀏覽的全域清單，
+// 不像痛點/語料綁定在單一 domain_profile 底下，所以這裡要列出使用者名下「所有」
+// 產品/服務設定（domain_profiles 上面就直接有 product_name），方便辨識要歸類到哪一組。
+// 原本設計是連到 product_solutions（每個痛點各自的解決方案），但現在前端已經不走那套
+// 舊流程，產品名稱／說明改成直接存在 domain_profiles 上，所以這裡改列 domain_profiles，
+// 才會抓得到使用者實際建立過、目前畫面上看得到的資料。
+async function handleSolutions(req, res, user) {
+  if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
+  try {
+    const rows = await restRequest(
+      `domain_profiles?user_id=eq.${user.id}&select=id,product_name,domain_tag&order=created_at.desc`
+    );
+    const items = rows.filter(r => r.product_name).map(r => ({
+      id: r.id,
+      product_name: r.product_name,
+      domain_tag: r.domain_tag,
+    }));
+    return res.status(200).json(items);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 async function handleFacets(req, res, user) {
   if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
   try {
@@ -265,7 +289,7 @@ async function handleFacets(req, res, user) {
 //   'direct' ：略過 OCR，讓模型直接「看圖」分析（見 analyzeSwipeCopyFromImage）。
 //              適合視覺為主、文字很少或版面/圖像本身就是說服力來源的廣告創意。
 async function handleCreate(req, res, user) {
-  const { raw_content, source_url, industry_tag, image, image_mode } = req.body || {};
+  const { raw_content, source_url, industry_tag, image, image_mode, domain_profile_id } = req.body || {};
 
   try {
     let analysis;
@@ -302,6 +326,7 @@ async function handleCreate(req, res, user) {
         angle_type: analysis.angle_type,
         block_breakdown: analysis.block_breakdown,
         extracted_pain_points: analysis.extractedPainPoints,
+        domain_profile_id: domain_profile_id || null,
       },
     });
     return res.status(200).json(saved);
@@ -384,6 +409,7 @@ module.exports = async (req, res) => {
   const { id, action } = req.query || {};
 
   if (action === 'facets') return handleFacets(req, res, user);
+  if (action === 'solutions') return handleSolutions(req, res, user);
 
   if (id && action === 'template') return handleTemplate(req, res, user, id);
 
