@@ -56,10 +56,48 @@ function round4(n) {
 function computeMetrics({ spend, impressions, clicks, conversions, revenue }) {
   const ctr = impressions ? clicks / impressions : null;
   const cpc = clicks ? spend / clicks : null;
+  const cpm = impressions ? spend * 1000 / impressions : null;
   const cpa = conversions ? spend / conversions : null;
   const cvr = clicks ? conversions / clicks : null;
   const roas = revenue !== null && revenue !== undefined && spend ? revenue / spend : null;
-  return { ctr: round4(ctr), cpc: round4(cpc), cpa: round4(cpa), cvr: round4(cvr), roas: round4(roas) };
+  return { ctr: round4(ctr), cpc: round4(cpc), cpm: round4(cpm), cpa: round4(cpa), cvr: round4(cvr), roas: round4(roas) };
+}
+function historyPeriodKey(performance) {
+  const start = performance && performance.reporting_period_start;
+  const end = performance && performance.reporting_period_end;
+  if (start || end) return `${start || 'unknown'}_${end || start || 'unknown'}`;
+  return new Date().toISOString().slice(0, 10);
+}
+async function savePerformanceHistory(user, adCopyId, performance, metrics) {
+  if (!performance) return;
+  const spend = numOrNull(performance.spend);
+  const reach = numOrNull(performance.reach);
+  const impressions = numOrNull(performance.impressions);
+  const clicks = numOrNull(performance.clicks);
+  const conversions = numOrNull(performance.conversions);
+  const revenue = numOrNull(performance.revenue);
+  const body = {
+    user_id: user.id,
+    ad_copy_id: adCopyId,
+    period_key: historyPeriodKey(performance),
+    reporting_period_start: performance.reporting_period_start || null,
+    reporting_period_end: performance.reporting_period_end || null,
+    source: performance.source || 'manual',
+    conversion_event: performance.conversion_event || 'lead',
+    spend, reach, impressions,
+    frequency: numOrNull(performance.frequency),
+    clicks,
+    outbound_clicks: numOrNull(performance.outbound_clicks),
+    landing_page_views: numOrNull(performance.landing_page_views),
+    add_to_cart: numOrNull(performance.add_to_cart),
+    initiate_checkout: numOrNull(performance.initiate_checkout),
+    conversions, revenue, ...metrics,
+  };
+  await restRequest('ad_performance_history?on_conflict=ad_copy_id,period_key,source', {
+    method: 'POST',
+    prefer: 'resolution=merge-duplicates,return=minimal',
+    body,
+  });
 }
 function numOrNull(v) {
   if (v === undefined || v === null || v === '') return null;
@@ -178,21 +216,24 @@ async function ingestOne(user, { domain_profile_id, platform, raw_content, meta_
     const conversions = numOrNull(performance.conversions);
     const revenue = numOrNull(performance.revenue);
     const metrics = computeMetrics({ spend, impressions, clicks, conversions, revenue });
-
+    const performanceBody = {
+      ad_copy_id: adCopy.id,
+      user_id: user.id,
+      spend, reach: numOrNull(performance.reach), impressions, clicks, conversions, revenue,
+      conversion_event: performance.conversion_event || 'lead',
+      reporting_period_start: performance.reporting_period_start || null,
+      reporting_period_end: performance.reporting_period_end || null,
+      source: performance.source || 'csv',
+      synced_at: new Date().toISOString(),
+      ...metrics,
+    };
     await restRequest('ad_performance_current?on_conflict=ad_copy_id', {
       method: 'POST',
       prefer: 'resolution=merge-duplicates,return=representation',
-      body: {
-        ad_copy_id: adCopy.id,
-        user_id: user.id,
-        spend, impressions, clicks, conversions, revenue,
-        ...metrics,
-        reporting_period_start: performance.reporting_period_start || null,
-        reporting_period_end: performance.reporting_period_end || null,
-        source: performance.source || 'csv',
-        synced_at: new Date().toISOString(),
-      },
+      body: performanceBody,
     });
+    try { await savePerformanceHistory(user, adCopy.id, performance, metrics); }
+    catch (historyErr) { /* 歷史表尚未 migration 時不阻擋目前快照寫入，部署後可補跑 migration。 */ }
   }
 
   return { ad_copy: adCopy, reused_existing: !!existing, ai_called: aiCalled };
@@ -219,7 +260,7 @@ async function handleCreate(req, res, user) {
 // 前端負責解析 CSV 並映射欄位（作法比照 raw-feedback-hub.js 的 items 匯入模式），
 // 這裡只吃結構化的 items 陣列，每筆對應一則廣告文案＋（選填）成效數據。
 async function handleBatchImport(req, res, user) {
-  const { domain_profile_id, platform, items } = req.body || {};
+  const { domain_profile_id, platform, conversion_event, items } = req.body || {};
   if (!Array.isArray(items) || !items.length) return sendError(res, 400, '請提供至少一筆匯入資料（items）。');
   if (items.length > MAX_BATCH_SIZE) return sendError(res, 400, `單次最多匯入 ${MAX_BATCH_SIZE} 筆，請分批匯入。`);
 
@@ -239,9 +280,10 @@ async function handleBatchImport(req, res, user) {
           raw_content: item.raw_content,
           meta_ad_id: item.meta_ad_id,
           meta_campaign_name: item.meta_campaign_name,
-          performance: item.performance || (item.spend !== undefined ? {
+          performance: item.performance ? { ...item.performance, conversion_event: item.performance.conversion_event || conversion_event || 'lead' } : (item.spend !== undefined ? {
             spend: item.spend, impressions: item.impressions, clicks: item.clicks,
             conversions: item.conversions, revenue: item.revenue,
+            conversion_event: item.conversion_event || conversion_event || 'lead',
             reporting_period_start: item.reporting_period_start, reporting_period_end: item.reporting_period_end,
             source: 'csv',
           } : null),
@@ -273,7 +315,7 @@ async function handleBatchImport(req, res, user) {
 const META_API_VERSION = process.env.META_API_VERSION || 'v21.0';
 
 async function fetchMetaInsights(adAccountId, accessToken, datePreset) {
-  const fields = 'ad_id,ad_name,campaign_name,spend,impressions,clicks,actions,date_start,date_stop';
+  const fields = 'ad_id,ad_name,campaign_name,spend,reach,frequency,impressions,clicks,outbound_clicks,actions,date_start,date_stop';
   const url = `https://graph.facebook.com/${META_API_VERSION}/act_${adAccountId}/insights` +
     `?level=ad&fields=${fields}&date_preset=${datePreset || 'last_30d'}&limit=200&access_token=${encodeURIComponent(accessToken)}`;
   const res = await fetch(url);
@@ -304,11 +346,14 @@ async function fetchAdCreativeText(adId, accessToken) {
 const CONVERSION_ACTION_TYPES = new Set([
   'purchase', 'lead', 'complete_registration', 'submit_application', 'schedule',
 ]);
-function extractConversions(actions) {
+function extractConversions(actions, primaryEvent = 'lead') {
   if (!Array.isArray(actions)) return null;
-  const total = actions
-    .filter(a => CONVERSION_ACTION_TYPES.has(a.action_type))
-    .reduce((sum, a) => sum + (Number(a.value) || 0), 0);
+  const allowed = primaryEvent === 'purchase' ? new Set(['purchase'])
+    : primaryEvent === 'complete_registration' ? new Set(['complete_registration'])
+      : primaryEvent === 'schedule' ? new Set(['schedule'])
+        : primaryEvent === 'add_to_cart' ? new Set(['add_to_cart'])
+          : new Set(['lead']);
+  const total = actions.filter(a => allowed.has(a.action_type)).reduce((sum, a) => sum + (Number(a.value) || 0), 0);
   return total || null;
 }
 
@@ -323,11 +368,14 @@ async function handleMetaSync(req, res, user) {
       if (!owned.length) return sendError(res, 404, '找不到對應的產品/服務設定。');
     }
 
+    const [profileConfig] = domain_profile_id
+      ? await restRequest(`domain_profiles?id=eq.${domain_profile_id}&user_id=eq.${user.id}&select=primary_conversion_event`)
+      : [];
+    const primaryEvent = (profileConfig && profileConfig.primary_conversion_event) || 'lead';
     const insights = await fetchMetaInsights(ad_account_id, access_token, date_preset);
     if (!insights.length) {
       return res.status(200).json({ created: 0, reused: 0, ai_calls: 0, total: 0, message: '這個廣告帳號在指定期間內沒有洞察報告資料。' });
     }
-
     let created = 0, reused = 0, aiCalls = 0, skipped = 0;
     const errors = [];
     for (const row of insights) {
@@ -336,16 +384,18 @@ async function handleMetaSync(req, res, user) {
         if (!text) { skipped++; continue; }
 
         const spend = numOrNull(row.spend);
+        const reach = numOrNull(row.reach);
         const impressions = numOrNull(row.impressions);
         const clicks = numOrNull(row.clicks);
-        const conversions = extractConversions(row.actions);
+        const conversions = extractConversions(row.actions, primaryEvent);
 
         const result = await ingestOne(user, {
           domain_profile_id, platform: platform || 'facebook', raw_content: text,
           meta_ad_id: row.ad_id, meta_campaign_name: row.campaign_name,
           performance: {
-            spend, impressions, clicks, conversions, revenue: null,
+            spend, reach, frequency: row.frequency, impressions, clicks, outbound_clicks: row.outbound_clicks, conversions, revenue: null,
             reporting_period_start: row.date_start, reporting_period_end: row.date_stop,
+            conversion_event: primaryEvent,
             source: 'meta_api',
           },
         });
@@ -405,6 +455,13 @@ function weightedAggregate(rows) {
 }
 
 async function buildMatrix(user, domain_profile_id) {
+  let primaryEvent = 'lead';
+  if (domain_profile_id) {
+    try {
+      const [profile] = await restRequest(`domain_profiles?id=eq.${domain_profile_id}&user_id=eq.${user.id}&select=primary_conversion_event`);
+      primaryEvent = (profile && profile.primary_conversion_event) || 'lead';
+    } catch (_) { /* migration 尚未執行時沿用 lead，避免矩陣無法開啟 */ }
+  }
   let query = `ad_copies?user_id=eq.${user.id}&select=id,ai_tags,performance:ad_performance_current(*)&ai_tags=not.is.null`;
   if (domain_profile_id) query += `&domain_profile_id=eq.${domain_profile_id}`;
   const copies = await restRequest(query);
@@ -415,7 +472,8 @@ async function buildMatrix(user, domain_profile_id) {
       const perf = Array.isArray(c.performance) ? c.performance[0] : c.performance;
       return { ai_tags: c.ai_tags, ...perf };
     })
-    .filter(c => c.spend !== null && c.spend !== undefined);
+    .filter(c => c.spend !== null && c.spend !== undefined)
+    .filter(c => !domain_profile_id || !c.conversion_event || c.conversion_event === primaryEvent);
 
   // ── 痛點轉換矩陣：依 primary_pain_tag 分組 ──
   const byPainTag = new Map();
@@ -449,6 +507,7 @@ async function buildMatrix(user, domain_profile_id) {
   return {
     based_on_ad_copies: withPerf.length,
     total_tagged_ad_copies: copies.length,
+    conversion_event: primaryEvent,
     pain_point_matrix: painPointMatrix,
     high_ctr_structure_templates: structureTemplates,
     note: withPerf.length < MIN_SAMPLE_SIZE_FOR_MATRIX
@@ -477,13 +536,20 @@ async function handleMatrixCreate(req, res, user) {
 // 刻意不允許在這裡改 raw_content——文案內容一改，content_hash 去重的意義就不一致了，
 // 若真的貼錯文案，建議直接刪除重新新增一則。
 async function handleUpdate(req, res, user, id) {
-  const { platform, primary_pain_tag, secondary_pain_tags, performance } = req.body || {};
+  const { platform, primary_pain_tag, secondary_pain_tags, match_status, match_reason, match_notes, performance } = req.body || {};
   try {
     const [existing] = await restRequest(`ad_copies?id=eq.${id}&user_id=eq.${user.id}&select=*`);
     if (!existing) return sendError(res, 404, '找不到對應的廣告文案。');
 
     const patch = {};
     if (platform !== undefined) patch.platform = platform || null;
+    if (match_status !== undefined) {
+      if (!['unreviewed', 'hit', 'partial', 'missed', 'unknown'].includes(match_status)) return sendError(res, 400, '不支援的素材命中狀態。');
+      patch.match_status = match_status;
+      patch.match_reviewed_at = match_status === 'unreviewed' ? null : new Date().toISOString();
+    }
+    if (match_reason !== undefined) patch.match_reason = match_reason || null;
+    if (match_notes !== undefined) patch.match_notes = match_notes || null;
     if (primary_pain_tag !== undefined || secondary_pain_tags !== undefined) {
       const tags = { ...(existing.ai_tags || {}) };
       if (primary_pain_tag !== undefined) {
@@ -513,11 +579,13 @@ async function handleUpdate(req, res, user, id) {
       const conversions = numOrNull(performance.conversions);
       const revenue = numOrNull(performance.revenue);
       const metrics = computeMetrics({ spend, impressions, clicks, conversions, revenue });
+      const performanceBody = { ad_copy_id: id, user_id: user.id, spend, reach: numOrNull(performance.reach), impressions, clicks, conversions, revenue, conversion_event: performance.conversion_event || 'lead', reporting_period_start: performance.reporting_period_start || null, reporting_period_end: performance.reporting_period_end || null, source: performance.source || 'manual', ...metrics };
       await restRequest('ad_performance_current?on_conflict=ad_copy_id', {
         method: 'POST',
         prefer: 'resolution=merge-duplicates,return=representation',
-        body: { ad_copy_id: id, user_id: user.id, spend, impressions, clicks, conversions, revenue, ...metrics },
+        body: performanceBody,
       });
+      try { await savePerformanceHistory(user, id, performance, metrics); } catch (_) { /* migration 尚未執行時仍保留目前快照 */ }
     }
 
     const [full] = await restRequest(`ad_copies?id=eq.${id}&user_id=eq.${user.id}&select=*,performance:ad_performance_current(*)`);
