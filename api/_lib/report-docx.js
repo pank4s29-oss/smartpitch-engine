@@ -1,5 +1,7 @@
-// 把「潛在受眾地圖」頁面產出的洞察報告（insight_reports.report JSON）轉成一份可下載、
-// 可離線保存或寄送客戶的 Word 文件。
+// 把「受眾痛點列表」與「潛在受眾地圖」這兩份系統本來就有的清單，組成一份可下載、
+// 可離線保存或寄送客戶的 Word 文件。報告內容刻意只有這兩個部分，不做額外的 AI 導讀、
+// 覆蓋率統計或風險提示——那些是另一層「分析」，這份文件單純是「原始清單的正式排版
+// 輸出」，跟畫面上看到的資料保證一致。
 //
 // 選擇 .docx 而不是在瀏覽器端用 jsPDF 之類的套件產生 PDF，是因為報告內容全部是繁體中文：
 // jsPDF 預設字型（Helvetica/Times）不含中日韓字符，要正確顯示中文得額外內嵌一套中文字型
@@ -22,13 +24,6 @@ function loadDocx() {
   return docxLibPromise;
 }
 
-const REVIEW_STATUS_LABEL = { unreviewed: '未複核', confirmed: '已確認', edited: '已確認．已修改', rejected: '已駁回' };
-const SOURCE_LABEL = { user_input: '手動輸入', ai_suggested: 'AI 建議', raw_feedback_extraction: '語料萃取', swipe_import: '文案手法庫帶入' };
-
-function pct(v) {
-  return v === null || v === undefined ? '—' : Math.round(v * 100) + '%';
-}
-
 // 以下所有 helper 都把用到的 docx 類別（D）當參數傳進來，而不是在檔案最上層 import 之後
 // 直接閉包參照——這樣即使動態載入延後發生，這些函式的定義本身完全不依賴載入時機。
 function heading(D, text, level) {
@@ -46,60 +41,13 @@ function bulletList(D, items) {
   return items.map(t => new D.Paragraph({ text: t, bullet: { level: 0 }, spacing: { after: 80 } }));
 }
 
-function statsTable(D, rows) {
-  const cell = (text, isHeader) => new D.TableCell({
-    width: { size: 50, type: D.WidthType.PERCENTAGE },
-    shading: isHeader ? { type: D.ShadingType.CLEAR, fill: 'F2F2F2' } : undefined,
-    children: [new D.Paragraph({ children: [new D.TextRun({ text: String(text), bold: !!isHeader })] })],
-  });
+// 每一筆（痛點或受眾族群）都包成一張「卡片」（單一儲存格的表格，帶邊框與底色），
+// 而不是一串鬆散的段落——純段落在 Word 裡視覺上很難看出「這裡到下一筆之間算同一組」，
+// 這是先前版本被抱怨「格式雜亂無章」的主因。用表格單一儲存格模擬卡片邊框是 docx
+// 格式裡最穩定的做法（Paragraph 沒有原生的 box-border 概念）；cantSplit 讓同一張
+// 卡片盡量不要被硬切到下一頁中間。
+function card(D, paragraphs) {
   return new D.Table({
-    width: { size: 100, type: D.WidthType.PERCENTAGE },
-    rows: rows.map(([label, value]) => new D.TableRow({ children: [cell(label, true), cell(value, false)] })),
-  });
-}
-
-// 每個痛點獨立包成一張「卡片」（單一儲存格的表格，帶邊框與底色），而不是一串鬆散的
-// 段落——純段落在 Word 裡視覺上很難看出「這裡到下一個標題之間都屬於同一個痛點」，
-// 尤其這份報告常常有 5、6 筆以上的痛點，混在一起就是使用者抱怨的「雜亂無章」。
-// 用表格單一儲存格模擬卡片邊框是 docx 格式裡最穩定的做法（Paragraph 沒有原生的
-// box-border 概念）；cantSplit 讓同一張卡片盡量不要被硬切到下一頁中間。
-function painPointCard(D, p, index) {
-  const title = `痛點 ${index + 1}：${p.surface_problem || '（未命名痛點）'}`;
-  const paras = [
-    new D.Paragraph({
-      children: [new D.TextRun({ text: title, bold: true, size: 26, color: '18332B' })],
-      spacing: { after: 100 },
-    }),
-    bodyText(D, `深層渴望：${p.deep_desire || '—'}`),
-  ];
-  if (p.detail) paras.push(bodyText(D, p.detail, { italics: true, color: '555555' }));
-
-  const metaLine = [
-    `來源：${SOURCE_LABEL[p.source] || p.source || '—'}`,
-    `複核狀態：${REVIEW_STATUS_LABEL[p.review_status] || p.review_status || '—'}`,
-    `語料佐證：${p.evidence_count || 0} 則`,
-    `置信度：${pct(p.confidence_score)}`,
-  ].join('　｜　');
-  paras.push(bodyText(D, metaLine, { color: '555555' }));
-
-  if (p.solution) {
-    paras.push(bodyText(D, `對應解決方案：${p.solution.product_name}（${p.solution.core_selling_point || '—'}）`));
-  } else {
-    paras.push(bodyText(D, '尚未配對解決方案', { color: '999999' }));
-  }
-
-  if (p.ad_performance) {
-    const ad = p.ad_performance;
-    paras.push(bodyText(D,
-      `真實廣告成效已驗證：CTR ${pct(ad.weighted_ctr)}｜CPA ${ad.weighted_cpa ?? '—'}｜CVR ${pct(ad.weighted_cvr)}` +
-      (ad.weighted_roas != null ? `｜ROAS ${ad.weighted_roas}` : '') +
-      `（依 ${ad.sample_size} 則廣告換算${ad.low_confidence ? '，樣本數過少僅供初步參考' : ''}）`,
-      { color: '2f6f3e' }
-    ));
-  } else {
-    paras.push(bodyText(D, '尚無對應的真實廣告成效數據，目前僅有語料佐證。', { color: '999999' }));
-  }
-  const card = new D.Table({
     width: { size: 100, type: D.WidthType.PERCENTAGE },
     rows: [
       new D.TableRow({
@@ -114,18 +62,51 @@ function painPointCard(D, p, index) {
               left: { style: D.BorderStyle.SINGLE, size: 16, color: '3E7A5C' },
               right: { style: D.BorderStyle.SINGLE, size: 4, color: 'BFD4CB' },
             },
-            children: paras,
+            children: paragraphs,
           }),
         ],
       }),
     ],
   });
-
-  // 卡片之間留一段空白，避免下一張卡片的邊框直接貼著上一張，視覺上黏在一起。
-  return [card, new D.Paragraph({ text: '', spacing: { after: 200 } })];
 }
 
-async function buildReportDocx(report, meta) {
+function titleParagraph(D, text) {
+  return new D.Paragraph({
+    children: [new D.TextRun({ text, bold: true, size: 26, color: '18332B' })],
+    spacing: { after: 100 },
+  });
+}
+
+function painPointCard(D, p, index) {
+  const paras = [
+    titleParagraph(D, `痛點 ${index + 1}：${p.surface_problem || '（未命名痛點）'}`),
+    bodyText(D, `深層渴望：${p.deep_desire || '—'}`),
+  ];
+  if (p.detail) paras.push(bodyText(D, p.detail, { italics: true, color: '555555' }));
+  return card(D, paras);
+}
+
+function segmentCard(D, seg, index, painPointMap) {
+  const paras = [titleParagraph(D, `受眾 ${index + 1}：${seg.segment_name || '未命名族群'}`)];
+  if (seg.description) paras.push(bodyText(D, seg.description));
+  if (seg.rationale) paras.push(bodyText(D, `為什麼這些痛點特別打中他們：${seg.rationale}`, { color: '555555' }));
+  if (seg.differentiation) paras.push(bodyText(D, `與目標受眾的差異：${seg.differentiation}`, { color: '555555' }));
+
+  const matchedIds = Array.isArray(seg.matched_pain_point_ids) ? seg.matched_pain_point_ids : [];
+  const matchedTitles = matchedIds.map(id => painPointMap.get(id)).filter(Boolean);
+  if (matchedTitles.length) {
+    paras.push(bodyText(D, `對應的痛點：${matchedTitles.join('、')}`, { color: '2f6f3e' }));
+  }
+
+  const formats = Array.isArray(seg.suggested_formats) ? seg.suggested_formats : [];
+  if (formats.length) {
+    paras.push(bodyText(D, '適合的數位資產形式：', { bold: true }));
+    formats.forEach(f => paras.push(bodyText(D, `${f.format}${f.reason ? '—' + f.reason : ''}`)));
+  }
+  return card(D, paras);
+}
+
+async function buildReportDocx(data, meta) {
   let D;
   try {
     D = await loadDocx();
@@ -133,13 +114,15 @@ async function buildReportDocx(report, meta) {
     throw new Error('無法載入 Word 文件產生套件（docx），請確認專案已安裝該套件並重新部署：' + err.message);
   }
 
-  const dp = report.domain_profile || {};
-  const audiences = Array.isArray(dp.audiences) ? dp.audiences.join('、') : '（未設定）';
-  const c = report.coverage || {};
+  const dp = data.domain_profile || {};
+  const audiences = Array.isArray(dp.audiences) && dp.audiences.length ? dp.audiences.join('、') : '（未設定）';
+  const painPoints = Array.isArray(data.pain_points) ? data.pain_points : [];
+  const segments = Array.isArray(data.segments) ? data.segments : [];
+  const painPointMap = new Map(painPoints.map(p => [p.id, p.surface_problem]));
 
   const children = [
     new D.Paragraph({
-      children: [new D.TextRun({ text: '潛在受眾洞察報告', bold: true, size: 44 })],
+      children: [new D.TextRun({ text: '受眾痛點與潛在受眾地圖報告', bold: true, size: 44 })],
       alignment: D.AlignmentType.CENTER,
       spacing: { after: 80 },
     }),
@@ -150,52 +133,39 @@ async function buildReportDocx(report, meta) {
     }),
   ];
 
-  if (dp.business_constraints) {
-    children.push(bodyText(D, `呈現媒介限制：${dp.business_constraints}`, { color: '666666' }));
+  if (dp.business_constraints_label) {
+    children.push(bodyText(D, `呈現媒介限制：${dp.business_constraints_label}`, { color: '666666' }));
   }
 
-  children.push(heading(D, '導讀', D.HeadingLevel.HEADING_2));
-  children.push(bodyText(D, report.narrative || 'AI 導讀暫時無法產生，以下數據統計仍完整可用。'));
-  if (report.narrative_edited) {
-    children.push(bodyText(D, '（此段導讀內容已由使用者手動編輯，非 AI 依數據自動產出的原文。）', { italics: true, color: '999999' }));
+  if (data.solution) {
+    children.push(heading(D, '產品／解決方案', D.HeadingLevel.HEADING_2));
+    children.push(bodyText(D, data.solution.product_name, { bold: true }));
+    if (data.solution.core_selling_point) children.push(bodyText(D, `核心賣點：${data.solution.core_selling_point}`));
+    children.push(bodyText(D, data.solution.solution_description));
+    if (data.solution.trust_proof) children.push(bodyText(D, `信任背書：${data.solution.trust_proof}`, { color: '555555' }));
   }
 
-  children.push(heading(D, '覆蓋率統計', D.HeadingLevel.HEADING_2));
-  children.push(statsTable(D, [
-    ['痛點總數', c.total_pain_points ?? 0],
-    ['有語料佐證', c.with_evidence ?? 0],
-    ['已人工確認', c.confirmed ?? 0],
-    ['尚未複核', c.unreviewed ?? 0],
-    ['已駁回', c.rejected ?? 0],
-    ['已配對解決方案', c.with_matched_solution ?? 0],
-    ['平均置信度', pct(c.avg_confidence_score)],
-    ['已有真實廣告成效驗證', c.with_ad_performance ?? 0],
-  ]));
-
-  if (Array.isArray(report.risk_flags) && report.risk_flags.length) {
-    children.push(heading(D, '風險提示', D.HeadingLevel.HEADING_2));
-    children.push(...bulletList(D, report.risk_flags));
-  }
-
-  if (Array.isArray(report.ad_performance_highlights) && report.ad_performance_highlights.length) {
-    children.push(heading(D, '廣告成效亮點', D.HeadingLevel.HEADING_2));
-    children.push(...bulletList(D, report.ad_performance_highlights));
-  }
-
-  if (report.framework_recommendation) {
-    children.push(heading(D, '框架建議', D.HeadingLevel.HEADING_2));
-    children.push(bodyText(D, `${report.framework_recommendation.name} — ${report.framework_recommendation.reason}`));
-  }
-
-  const points = Array.isArray(report.pain_points) ? report.pain_points : [];
-  // 逐項分析獨立另起一頁：跟前面的摘要統計／導讀分開，讀者一眼就知道「總覽」看完了，
-  // 接下來是「一筆一筆的細節」，而不是被同一頁越擠越長的內容打斷閱讀節奏。
-  children.push(new D.Paragraph({ children: [], pageBreakBefore: true }));
-  children.push(heading(D, '受眾痛點逐項分析', D.HeadingLevel.HEADING_2));
-  if (!points.length) {
+  children.push(heading(D, '受眾痛點列表', D.HeadingLevel.HEADING_2));
+  if (!painPoints.length) {
     children.push(bodyText(D, '此產品/服務設定尚無痛點資料。', { color: '999999' }));
   } else {
-    points.forEach((p, i) => children.push(...painPointCard(D, p, i)));
+    painPoints.forEach((p, i) => {
+      children.push(painPointCard(D, p, i));
+      children.push(new D.Paragraph({ text: '', spacing: { after: 200 } }));
+    });
+  }
+
+  // 潛在受眾地圖另起一頁：跟前面的痛點列表分開，讀者一眼就知道「這裡開始是反推出來的
+  // 細分受眾族群」，而不是被同一頁越擠越長的內容打斷閱讀節奏。
+  children.push(new D.Paragraph({ children: [], pageBreakBefore: true }));
+  children.push(heading(D, '潛在受眾地圖', D.HeadingLevel.HEADING_2));
+  if (!segments.length) {
+    children.push(bodyText(D, '此產品/服務設定尚無潛在受眾分析結果。', { color: '999999' }));
+  } else {
+    segments.forEach((seg, i) => {
+      children.push(segmentCard(D, seg, i, painPointMap));
+      children.push(new D.Paragraph({ text: '', spacing: { after: 200 } }));
+    });
   }
 
   const doc = new D.Document({
