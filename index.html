@@ -13,7 +13,6 @@
 <button type="button" class="nav-item nav-item-scoped" data-page="segments"><span class="nav-item-icon" aria-hidden="true">03</span>潛在受眾地圖</button>
 <button type="button" class="nav-item nav-item-scoped" data-page="adcopies"><span class="nav-item-icon" aria-hidden="true">04</span>Meta 廣告效益</button>
 <hr class="sidebar-divider">
-<button type="button" class="nav-item" data-page="library"><span class="nav-item-icon" aria-hidden="true">◍</span>報告資料庫</button>
 <button type="button" class="nav-item" data-page="swipe"><span class="nav-item-icon" aria-hidden="true">◍</span>產業文案手法庫</button>
 </nav>
 </aside>
@@ -74,7 +73,7 @@
 
 <div id="dashboard-empty" hidden>
 <section class="panel">
-<div class="step-heading"><b>＋</b><div><h2>還沒有任何產品／服務設定</h2><p>建立第一組設定，開始匯入語料、萃取痛點，並產出洞察報告。</p></div></div>
+<div class="step-heading"><b>＋</b><div><h2>還沒有任何產品／服務設定</h2><p>建立第一組設定，開始匯入語料、萃取痛點，並查看受眾痛點與潛在受眾地圖。</p></div></div>
 <button type="button" id="dashboard-new-profile-btn">建立第一組產品／服務設定 →</button>
 </section>
 </div>
@@ -137,7 +136,7 @@
 <div class="requires-profile">
 
 <section class="panel">
-<div class="step-heading"><b>02</b><div><h2>語料匯入與痛點紀錄</h2><p>新增一則真實語料時，請同時填寫這則語料對應的痛點——語料是佐證，痛點才是後續報告與文案會用到的洞察，兩者一起建立才不會脫節。</p></div></div>
+<div class="step-heading"><b>02</b><div><h2>語料匯入與痛點紀錄</h2><p>新增一則真實語料時，請同時填寫這則語料對應的痛點——語料可作為整理思考的素材；系統最後只會呈現你確認後的受眾痛點。</p></div></div>
 <div id="label-manager" class="label-manager"></div>
 <form id="feedback-form">
 <label>語料來源<select name="source_type" id="source-type-select"></select></label>
@@ -181,11 +180,11 @@
 <button type="button" id="extract-btn" class="secondary" disabled>對已勾選的語料，交由 AI 分析萃取痛點 →</button>
 
 <hr class="divider">
-<div class="step-heading" style="margin-top:6px"><b>&#9679;</b><div><h3 style="margin:0">目前痛點清單</h3><p>每筆痛點的置信度來自「有多少語料佐證」，不是 AI 自己打的分數。</p></div><div class="step-actions"><button type="button" id="matched-templates-btn" class="ghost small">比對高轉化模板 →</button></div></div>
+<div class="step-heading" style="margin-top:6px"><b>&#9679;</b><div><h3 style="margin:0">目前痛點清單</h3><p>以下是目前確認後的受眾潛在痛點，供後續受眾地圖與策略使用。</p></div><div class="step-actions"><button type="button" id="matched-templates-btn" class="ghost small">比對高轉化模板 →</button></div></div>
 <div id="matched-templates-result"></div>
 <details class="advanced-tools">
 <summary>進階：AI 輔助草稿／不綁語料手動新增</summary>
-<p class="muted" style="margin:10px 0 12px">以下三項都沒有直接綁定真實語料佐證，僅供發想或補充參考。若已累積 Meta 廣告成效數據，建議優先參考「Meta 廣告效益驗證」頁面的痛點轉換矩陣，那是用真實成效驗證過的結果。</p>
+<p class="muted" style="margin:10px 0 12px">以下內容僅供發想或補充參考，加入清單前請先依你的受眾情境檢視。若已累積 Meta 廣告成效數據，建議優先參考「Meta 廣告效益驗證」頁面的痛點轉換矩陣，那是用真實成效驗證過的結果。</p>
 <div class="step-actions">
 <button type="button" id="swipe-import-btn" class="ghost small">從文案手法庫帶入</button>
 <button type="button" id="suggest-btn" class="ghost small">AI 建議草稿</button>
@@ -224,9 +223,8 @@
 </section>
 
 <section class="panel">
-<div class="step-heading"><b>04</b><div><h2>產出分析報告與匯出</h2><p>彙整目前所有痛點的驗證狀態、覆蓋率與風險提示，並可將完整報告下載成 Word 文件離線保存或寄送客戶。</p></div></div>
+<div class="step-heading"><b>04</b><div><h2>產出分析報告與匯出</h2><p>將目前的受眾潛在痛點列表與潛在受眾地圖整理成一份可閱讀、可下載的報告。</p></div></div>
 <button type="button" id="generate-report-btn">產出報告 →</button>
-<div id="report-history" class="muted" style="margin-top:14px"></div>
 </section>
 
 <section id="report-result" hidden></section>
@@ -239,7 +237,7 @@
 <div class="requires-profile">
 
 <section class="panel" id="ad-copies-panel">
-<div class="step-heading"><b>05</b><div><h2>Meta 廣告效益驗證</h2><p>廣告上線後，把真實花費數據回灌進來——同一份文案不管回灌幾次都只標籤化一次，用「有多少人點、花多少錢轉換一次、賺不賺得回廣告費」這些真實數據交叉驗證哪個痛點真的打得動人，而不是靠 AI 猜置信度。</p></div></div>
+<div class="step-heading"><b>05</b><div><h2>Meta 廣告效益驗證</h2><p>廣告上線後，把真實花費數據回灌進來——同一份文案不管回灌幾次都只標籤化一次，用「有多少人點、花多少錢轉換一次、賺不賺得回廣告費」這些真實數據交叉驗證哪個痛點真的打得動人，而不是靠 AI 猜測。</p></div></div>
 
 <form id="ad-copy-form">
 <label>廣告文案內容<textarea name="raw_content" required placeholder="貼上一則已投放的 Meta 廣告文案…"></textarea></label>
@@ -271,7 +269,7 @@
 
 <hr class="divider">
 <details class="meta-sync">
-<summary><strong>連接 Meta 廣告帳號自動同步</strong><span class="muted">直接從 Meta Graph API 拉取洞察報告與文案素材</span></summary>
+<summary><strong>連接 Meta 廣告帳號自動同步</strong><span class="muted">直接從 Meta Graph API 拉取廣告成效與文案素材</span></summary>
 <p class="muted" style="margin:10px 0 12px">Access Token 僅用於這次同步請求，系統不會儲存。需要有該廣告帳號的讀取權限。</p>
 <form id="meta-sync-form">
 <div class="grid">
@@ -301,19 +299,6 @@
 </section>
 
 </div>
-</section>
-
-<section class="page" data-page="library" id="page-library">
-<section class="panel" id="report-library-panel">
-<div class="step-heading"><b>◍</b><div><h2>洞察報告資料庫</h2><p>瀏覽這個帳號底下所有產品/服務設定產出過的洞察報告，可依領域、受眾、價格帶篩選。</p></div></div>
-<div id="report-library-filter-bar" class="filter-bar">
-<select id="report-filter-domain"><option value="">全部產業／領域</option></select>
-<select id="report-filter-audience"><option value="">全部目標受眾</option></select>
-<select id="report-filter-tier"><option value="">全部價格帶</option></select>
-<button type="button" id="report-filter-reset" class="ghost small">清除篩選</button>
-</div>
-<div id="report-library-list" style="margin-top:14px"><p class="muted">尚無報告。</p></div>
-</section>
 </section>
 
 <section class="page" data-page="swipe" id="page-swipe">
@@ -410,8 +395,6 @@
 <div class="pc-quote"></div>
 <div class="pain-meta">
 <span class="pc-source"></span>
-<span class="pc-evidence"></span>
-<span class="pc-confidence"></span>
 </div>
 <div class="pc-solution"></div>
 <div class="pain-actions">
@@ -430,64 +413,6 @@
 <button type="button" class="small ghost pc-edit-cancel">取消</button>
 </div>
 </form>
-</article>
-</template>
-
-<template id="report-tpl">
-<div class="panel report-panel">
-<div class="step-heading">
-<b>&#9679;</b>
-<div><h2>洞察報告</h2><p class="r-meta"></p></div>
-<div class="step-actions">
-<button type="button" class="ghost small r-export-docx">匯出 Word 文件 →</button>
-<button type="button" class="ghost small r-print">列印／匯出 PDF</button>
-<button type="button" class="ghost small danger r-delete-report">刪除報告</button>
-</div>
-</div>
-<div class="narrative-row">
-<div class="narrative r-narrative"></div>
-<button type="button" class="ghost small r-edit-narrative">編輯導讀 ✎</button>
-</div>
-<p class="narrative-edited-tag r-narrative-edited-tag" hidden>此段導讀已由使用者手動編輯。</p>
-<div class="stat-grid r-stats"></div>
-<div class="r-risks"></div>
-<div class="r-ad-highlights"></div>
-<div class="framework-box r-framework"></div>
-
-<hr class="divider">
-<div class="report-detail-head">
-<h3>受眾痛點逐項分析</h3>
-<div class="step-actions">
-<button type="button" class="ghost small r-toggle-breakdown">顯示逐項分析 →</button>
-<label class="sort-label r-sort-label" hidden>排序
-<select class="r-sort">
-<option value="confidence_desc">置信度：高到低</option>
-<option value="confidence_asc">置信度：低到高</option>
-<option value="status">複核狀態</option>
-<option value="evidence_desc">佐證則數：多到少</option>
-<option value="ad_ctr_desc">真實廣告點閱率：高到低</option>
-</select>
-</label>
-</div>
-</div>
-<div class="r-breakdown" hidden></div>
-</div>
-</template>
-
-<template id="report-row-tpl">
-<article class="report-row">
-<div class="report-row-top">
-<div><h4 class="rr-surface"></h4><p class="deep-desire rr-desire"></p></div>
-<span class="stamp rr-stamp"></span>
-</div>
-<div class="confidence-bar"><div class="confidence-bar-fill rr-bar"></div></div>
-<div class="pain-meta">
-<span class="rr-source"></span>
-<span class="rr-evidence"></span>
-<span class="rr-confidence"></span>
-</div>
-<div class="rr-ad-performance"></div>
-<div class="rr-solution"></div>
 </article>
 </template>
 
