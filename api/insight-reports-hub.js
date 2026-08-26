@@ -341,6 +341,44 @@ async function handleDelete(req, res, user, id) {
   }
 }
 
+// 報告本身的統計數字／逐項痛點都是程式碼依實際資料算出來的，刻意不開放整份報告任意
+// 竄改（否則報告的「可信度」這個核心賣點就沒意義了）。唯一開放編輯的是 narrative——
+// 那本來就是一段 AI 產出、給人看的白話文字，使用者常見需求是「AI 寫的語氣要微調
+// 一下再拿去寄給客戶」，或是 AI 導讀當次生成失敗（narrative 為 null）想手動補一段。
+// 編輯後一律標記 narrative_edited: true，report-docx 匯出與前端都可以依此顯示「已手動編輯」，
+// 避免使用者誤以為這段文字仍然是 AI 當初依數據產出的原文。
+const NARRATIVE_MAX_LENGTH = 500;
+
+async function handlePatch(req, res, user, id) {
+  const { narrative } = req.body || {};
+  if (narrative === undefined) return sendError(res, 400, '沒有要更新的欄位。');
+  const trimmed = typeof narrative === 'string' ? narrative.trim() : '';
+  if (trimmed.length > NARRATIVE_MAX_LENGTH) {
+    return sendError(res, 400, `導讀內容過長，請控制在 ${NARRATIVE_MAX_LENGTH} 字以內（目前 ${trimmed.length} 字）。`);
+  }
+  try {
+    const [existing] = await restRequest(`insight_reports?id=eq.${id}&user_id=eq.${user.id}&select=id,report`);
+    if (!existing) return sendError(res, 404, '找不到對應的報告。');
+
+    const updatedReport = {
+      ...existing.report,
+      narrative: trimmed || null,
+      narrative_edited: true,
+    };
+    delete updatedReport.narrative_error;
+
+    const [saved] = await restRequest(`insight_reports?id=eq.${id}&user_id=eq.${user.id}`, {
+      method: 'PATCH',
+      prefer: 'return=representation',
+      body: { report: updatedReport },
+    });
+    if (!saved) return sendError(res, 404, '找不到對應的報告。');
+    return res.status(200).json({ id: saved.id, status: saved.status, report: saved.report });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
@@ -348,6 +386,7 @@ module.exports = async (req, res) => {
   const { id } = req.query || {};
   if (id) {
     if (req.method === 'DELETE') return handleDelete(req, res, user, id);
+    if (req.method === 'PATCH') return handlePatch(req, res, user, id);
     if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
     return handleGet(req, res, user, id);
   }
