@@ -103,7 +103,8 @@ module.exports = async (req, res) => {
       await restRequest(`copy_variants?user_id=eq.${user.id}`, { method: 'DELETE' });
       await restRequest(`generation_params?user_id=eq.${user.id}`, { method: 'DELETE' });
       await restRequest(`generation_requests?user_id=eq.${user.id}`, { method: 'DELETE' });
-      await restRequest(`insight_reports?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`audience_reports?user_id=eq.${user.id}`, { method: 'DELETE' });
+      await restRequest(`insight_reports?user_id=eq.${user.id}`, { method: 'DELETE' }).catch(() => {});
       await restRequest(`product_solutions?user_id=eq.${user.id}`, { method: 'DELETE' });
       await restRequest(`audience_segments?user_id=eq.${user.id}`, { method: 'DELETE' });
       await restRequest(`audience_pain_points?user_id=eq.${user.id}`, { method: 'DELETE' });
