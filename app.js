@@ -254,9 +254,12 @@ $('#profile-select').addEventListener('change', e => onProfileSelected(e.target.
 function onProfileSelected(id) {
   currentProfileId = id;
   updateProfileToolbar();
-  const scope = $('#profile-scope');
-  if (!id) { scope.hidden = true; return; }
-  scope.hidden = false;
+  // 原本是把「語料與痛點／潛在受眾／報告／廣告效益」四個區塊包在同一個 #profile-scope
+  // 容器裡整個 hidden 掉；改成左側功能列各自獨立頁面之後，這四個區塊分散在不同頁面，
+  // 改用 body 的 class 統一控制「尚未選擇產品/服務設定」時，各頁面顯示提示文字、
+  // 隱藏底下需要 currentProfileId 才有意義的內容（見 style.css 的 .requires-profile 規則）。
+  document.body.classList.toggle('no-profile-selected', !id);
+  if (!id) return;
   $('#report-result').hidden = true;
   const suggestPreview = $('#suggest-preview');
   if (suggestPreview) suggestPreview.innerHTML = '';
@@ -268,7 +271,10 @@ function onProfileSelected(id) {
 }
 
 async function refreshProfileScope() {
-  await Promise.all([loadSourceLabels(), loadFeedback(), loadPainPoints(), loadReportHistory(), loadAdCopies()]);
+  // loadPainPoints() 先跑完，是因為潛在受眾地圖的卡片要顯示「對應哪些痛點」的標籤，
+  // 需要 painPointsCache 已經有資料才能對得上，不能跟 loadSegments() 同時搶著跑。
+  await loadPainPoints();
+  await Promise.all([loadSourceLabels(), loadFeedback(), loadReportHistory(), loadAdCopies(), loadSegments()]);
 }
 
 // ---------------- 語料來源分類管理 ----------------
@@ -367,6 +373,30 @@ function renderFeedbackList() {
       try { await api(`/api/raw-feedback/${f.id}`, { method: 'DELETE' }); await loadFeedback(); }
       catch (err) { setStatus('⚠ ' + err.message, true); }
     };
+    // 編輯語料內容本身（修正錯字/漏字），跟痛點卡片的編輯是同一種「點擊展開表單」互動模式，
+    // 沿用 .pc-edit-form 的樣式（見 style.css），維持整站編輯 UI 的一致性。
+    const editBtn = node.querySelector('.fb-edit');
+    const editForm = node.querySelector('.fb-edit-form');
+    editBtn.onclick = () => {
+      editForm.querySelector('.edit-raw_text').value = f.raw_text;
+      editForm.hidden = false;
+    };
+    editForm.querySelector('.fb-edit-cancel').onclick = () => { editForm.hidden = true; };
+    editForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const raw_text = editForm.querySelector('.edit-raw_text').value.trim();
+      if (!raw_text) return;
+      const btn = editForm.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      try {
+        await api(`/api/raw-feedback/${f.id}`, { method: 'PATCH', body: JSON.stringify({ raw_text }) });
+        setStatus('已更新語料內容。');
+        await loadFeedback();
+      } catch (err) {
+        setStatus('⚠ ' + err.message, true);
+        btn.disabled = false;
+      }
+    });
     list.append(node);
   });
   updateExtractBtn();
@@ -1051,63 +1081,136 @@ $('#manual-pain-form').addEventListener('submit', async e => {
 // 從目前已通過複核（未被駁回）的痛點反推：這些痛點背後可能對應到哪些沒被明講、
 // 但真實存在的細分受眾族群。每個族群卡片列出「這個族群是誰」以及「對應到哪些痛點」，
 // 讓使用者可以清楚看到痛點與受眾之間的對應關係，而不只是一份扁平的痛點清單。
+//
+// 分析結果會存進 audience_segments 資料表（比照痛點的做法），所以這裡分兩條路徑：
+//   loadSegments()     單純讀取目前已存在的族群清單，不呼叫 AI（頁面載入、編輯/刪除後都走這條）
+//   segmentsBtn.onclick 觸發一次新的 AI 分析，新產生的族群會併入既有清單（重複的族群名稱不重複寫入）
 
 const SEGMENTS_PLACEHOLDER = '<p class="muted">尚未分析。點擊「分析潛在受眾」，系統會根據目前的痛點清單（已駁回者不計入）反推可能的受眾族群。</p>';
 
+let segmentsCache = [];
+
 function resetSegmentsPanel() {
+  segmentsCache = [];
   const el = $('#segments-result');
   if (el) el.innerHTML = SEGMENTS_PLACEHOLDER;
 }
 
-function renderSegments(result) {
+async function loadSegments() {
+  if (!currentProfileId) return;
+  try {
+    const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`);
+    renderSegmentsList(result.segments || []);
+  } catch (e) { setStatus('⚠ ' + e.message, true); }
+}
+
+function segmentCardHtml(seg) {
+  const painMap = new Map(painPointsCache.map(p => [p.id, p]));
+  const matchedIds = Array.isArray(seg.matched_pain_point_ids) ? seg.matched_pain_point_ids : [];
+  const chips = matchedIds.map(id => {
+    const p = painMap.get(id);
+    return p ? `<span class="label-chip" style="cursor:default">${esc(p.surface_problem)}</span>` : '';
+  }).join('');
+  const formats = Array.isArray(seg.suggested_formats) ? seg.suggested_formats : [];
+
+  return `<article class="pain-card" data-id="${esc(seg.id)}">
+    <div class="pain-card-top">
+      <div><h3 class="seg-name-display">${esc(seg.segment_name)}</h3><p class="deep-desire seg-desc-display">${esc(seg.description)}</p></div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+        ${seg.status === 'edited' ? '<span class="stamp edited">已編輯</span>' : ''}
+        <span class="stamp confirmed">對應 <span class="num">${matchedIds.length}</span> 個痛點</span>
+      </div>
+    </div>
+    ${seg.rationale ? `<div class="pain-quote seg-rationale-display">${esc(seg.rationale)}</div>` : ''}
+    ${seg.differentiation ? `<div class="segment-differentiation seg-diff-display"><b>與目標受眾的差異：</b>${esc(seg.differentiation)}</div>` : ''}
+    ${formats.length ? `
+    <div class="pain-meta" style="margin-top:12px">適合賣給這個族群的數位資產形式：</div>
+    <div class="framework-box" style="margin-top:8px">${formats.map(f =>
+      `<div style="margin-bottom:6px"><b>${esc(f.format)}</b>${f.reason ? ' — ' + esc(f.reason) : ''}</div>`
+    ).join('')}</div>` : ''}
+    <div class="pain-meta" style="margin-top:12px">這個族群特別在意的痛點：</div>
+    <div class="label-chips" style="margin-top:8px">${chips || '<span class="muted">（無對應痛點，可能是原本對應的痛點已被刪除）</span>'}</div>
+    <div class="pain-actions" style="margin-top:12px">
+      <button type="button" class="small ghost seg-edit">編輯</button>
+      <button type="button" class="small danger ghost seg-delete">刪除</button>
+    </div>
+    <form class="seg-edit-form pc-edit-form" hidden>
+      <label>族群名稱<input class="edit-segment_name" value="${esc(seg.segment_name)}" required></label>
+      <label>族群描述<textarea class="edit-description">${esc(seg.description || '')}</textarea></label>
+      <label>為什麼這些痛點特別打中他們（選填）<textarea class="edit-rationale">${esc(seg.rationale || '')}</textarea></label>
+      <label>與目標受眾的差異（選填）<textarea class="edit-differentiation">${esc(seg.differentiation || '')}</textarea></label>
+      <p class="muted" style="margin:4px 0 0">對應的痛點與建議的數位資產形式不透過這裡修改；要調整對應痛點，請到「語料與痛點」頁面調整痛點本身。</p>
+      <div class="pain-actions">
+        <button type="submit" class="small">儲存修改</button>
+        <button type="button" class="small ghost seg-edit-cancel">取消</button>
+      </div>
+    </form>
+  </article>`;
+}
+
+function wireSegmentCardEvents(container) {
+  container.querySelectorAll('.pain-card[data-id]').forEach(card => {
+    const id = card.dataset.id;
+    const editBtn = card.querySelector('.seg-edit');
+    const deleteBtn = card.querySelector('.seg-delete');
+    const form = card.querySelector('.seg-edit-form');
+
+    if (editBtn && form) {
+      editBtn.onclick = () => { form.hidden = false; };
+      form.querySelector('.seg-edit-cancel').onclick = () => { form.hidden = true; };
+      form.addEventListener('submit', async e => {
+        e.preventDefault();
+        const submitBtn = form.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        const body = {
+          segment_id: id,
+          segment_name: form.querySelector('.edit-segment_name').value.trim(),
+          description: form.querySelector('.edit-description').value.trim(),
+          rationale: form.querySelector('.edit-rationale').value.trim(),
+          differentiation: form.querySelector('.edit-differentiation').value.trim(),
+        };
+        try {
+          await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`, { method: 'PATCH', body: JSON.stringify(body) });
+          setStatus('已更新這個受眾族群。');
+          await loadSegments();
+        } catch (err) {
+          setStatus('⚠ ' + err.message, true);
+          submitBtn.disabled = false;
+        }
+      });
+    }
+
+    if (deleteBtn) {
+      deleteBtn.onclick = async () => {
+        const seg = segmentsCache.find(s => s.id === id);
+        if (!confirm(`確定要刪除「${(seg && seg.segment_name) || '這個'}」這個受眾族群嗎？此操作無法復原。`)) return;
+        deleteBtn.disabled = true;
+        try {
+          await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`, { method: 'DELETE', body: JSON.stringify({ segment_id: id }) });
+          await loadSegments();
+        } catch (err) {
+          setStatus('⚠ ' + err.message, true);
+          deleteBtn.disabled = false;
+        }
+      };
+    }
+  });
+}
+
+function renderSegmentsList(segments, meta) {
   const container = $('#segments-result');
   if (!container) return;
-  const segments = result.segments || [];
+  meta = meta || {};
+  segmentsCache = segments || [];
 
-  if (!segments.length) {
-    container.innerHTML = `<p class="muted">${esc(result.message || '目前的痛點清單區別度不高，尚未反推出獨立的受眾族群，可以先補充更多痛點再試一次。')}</p>`;
+  if (!segmentsCache.length) {
+    container.innerHTML = `<p class="muted">${esc(meta.message || '尚無潛在受眾分析結果，點擊上方「分析潛在受眾」開始。')}</p>`;
     return;
   }
 
-  const painMap = new Map(painPointsCache.map(p => [p.id, p]));
-  container.innerHTML = '';
-
-  if (result.note) {
-    const note = document.createElement('p');
-    note.className = 'muted';
-    note.style.margin = '0 0 14px';
-    note.textContent = result.note;
-    container.append(note);
-  }
-
-  segments.forEach(seg => {
-    const card = document.createElement('article');
-    card.className = 'pain-card';
-
-    const matchedIds = seg.matched_pain_point_ids || [];
-    const chips = matchedIds.map(id => {
-      const p = painMap.get(id);
-      if (!p) return '';
-      return `<span class="label-chip" style="cursor:default">${esc(p.surface_problem)}</span>`;
-    }).join('');
-
-    card.innerHTML = `
-      <div class="pain-card-top">
-        <div><h3>${esc(seg.segment_name)}</h3><p class="deep-desire">${esc(seg.description)}</p></div>
-        <span class="stamp confirmed">對應 <span class="num">${matchedIds.length}</span> 個痛點</span>
-      </div>
-      ${seg.rationale ? `<div class="pain-quote">${esc(seg.rationale)}</div>` : ''}
-      ${seg.differentiation ? `<div class="segment-differentiation"><b>與目標受眾的差異：</b>${esc(seg.differentiation)}</div>` : ''}
-      ${Array.isArray(seg.suggested_formats) && seg.suggested_formats.length ? `
-      <div class="pain-meta" style="margin-top:12px">適合賣給這個族群的數位資產形式：</div>
-      <div class="framework-box" style="margin-top:8px">${seg.suggested_formats.map(f =>
-        `<div style="margin-bottom:6px"><b>${esc(f.format)}</b>${f.reason ? ' — ' + esc(f.reason) : ''}</div>`
-      ).join('')}</div>` : ''}
-      <div class="pain-meta" style="margin-top:12px">這個族群特別在意的痛點：</div>
-      <div class="label-chips" style="margin-top:8px">${chips || '<span class="muted">（無對應痛點）</span>'}</div>
-    `;
-    container.append(card);
-  });
+  const noteHtml = meta.note ? `<p class="muted" style="margin:0 0 14px">${esc(meta.note)}</p>` : '';
+  container.innerHTML = noteHtml + segmentsCache.map(segmentCardHtml).join('');
+  wireSegmentCardEvents(container);
 }
 
 const segmentsBtn = $('#segments-btn');
@@ -1117,13 +1220,18 @@ if (segmentsBtn) {
     segmentsBtn.disabled = true;
     setStatus('正在根據目前的痛點清單反推潛在受眾族群…');
     try {
-      const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`);
-      renderSegments(result);
-      setStatus(
-        result.segments && result.segments.length
-          ? `分析出 ${result.segments.length} 個潛在受眾族群（依據 ${result.based_on_count} 筆痛點）${result.constraints_applied ? '，已套用呈現媒介限制：' + result.constraints_applied : ''}。`
-          : (result.message || '尚未反推出有區別度的受眾族群。')
-      );
+      const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`, { method: 'POST' });
+      renderSegmentsList(result.segments || [], { note: result.note, message: result.message });
+      if (result.segments && result.segments.length) {
+        const parts = [];
+        if (result.inserted_count) parts.push(`新增 ${result.inserted_count} 個`);
+        if (result.skipped_duplicate_count) parts.push(`${result.skipped_duplicate_count} 個與既有族群重複已略過`);
+        setStatus(
+          `目前共 ${result.segments.length} 個潛在受眾族群${parts.length ? '（' + parts.join('，') + '）' : ''}${result.constraints_applied ? '，已套用呈現媒介限制：' + result.constraints_applied : ''}。`
+        );
+      } else {
+        setStatus(result.message || '尚未反推出有區別度的受眾族群。');
+      }
     } catch (err) { setStatus('⚠ ' + err.message, true); }
     finally { segmentsBtn.disabled = false; }
   };
@@ -1434,8 +1542,21 @@ function swipeCardHtml(x) {
     <div class="pain-actions">
       <button data-id="${esc(x.id)}" class="small ghost reanalyze">重新分析</button>
       <button data-id="${esc(x.id)}" class="small ghost template-btn">填空模板</button>
+      <button data-id="${esc(x.id)}" class="small ghost swipe-edit">編輯</button>
       <button data-id="${esc(x.id)}" class="small danger ghost delete">刪除</button>
     </div>
+    <form class="swipe-edit-form pc-edit-form" data-id="${esc(x.id)}" hidden>
+      <div class="grid">
+        <label>產業／領域<input class="edit-industry_tag" value="${esc(x.industry_tag)}" required></label>
+        <label>框架<input class="edit-framework_tag" value="${esc(x.framework_tag)}" required></label>
+      </div>
+      <label>文案原文<textarea class="edit-raw_content" required>${esc(x.raw_content)}</textarea></label>
+      <p class="muted" style="margin:4px 0 0">修改原文後，填空模板快取會清空，下次點開需要重新產生一次。</p>
+      <div class="pain-actions">
+        <button type="submit" class="small">儲存修改</button>
+        <button type="button" class="small ghost swipe-edit-cancel">取消</button>
+      </div>
+    </form>
     <div class="template-container" data-id="${esc(x.id)}" data-loaded="false" hidden></div>
   </article>`;
 }
@@ -1526,6 +1647,35 @@ async function loadSwipes() {
         b.disabled = false;
         b.textContent = original;
       }
+    });
+    // 編輯：修正 AI 判斷錯的產業/框架標籤，或原文本身有誤植的地方。後端沿用既有的
+    // PUT /api/swipe-copies/:id（EDITABLE_FIELDS 早就支援這幾個欄位，只是先前沒有 UI）。
+    swipeList.querySelectorAll('.swipe-edit').forEach(b => {
+      const article = b.closest('.pain-card');
+      const form = article.querySelector(`.swipe-edit-form[data-id="${b.dataset.id}"]`);
+      b.onclick = () => { form.hidden = false; };
+      form.querySelector('.swipe-edit-cancel').onclick = () => { form.hidden = true; };
+      form.addEventListener('submit', async e => {
+        e.preventDefault();
+        const btn = form.querySelector('button[type="submit"]');
+        btn.disabled = true;
+        try {
+          await api('/api/swipe-copies/' + b.dataset.id, {
+            method: 'PUT',
+            body: JSON.stringify({
+              industry_tag: form.querySelector('.edit-industry_tag').value.trim(),
+              framework_tag: form.querySelector('.edit-framework_tag').value.trim(),
+              raw_content: form.querySelector('.edit-raw_content').value.trim(),
+            }),
+          });
+          setStatus('已更新範例文案。');
+          await loadSwipes();
+          loadSwipeFacets();
+        } catch (err) {
+          setStatus('⚠ ' + err.message, true);
+          btn.disabled = false;
+        }
+      });
     });
     // 填空模板：見檔案上方共用的 toggleTemplateContainer／renderSwipeTemplate。
     swipeList.querySelectorAll('.template-btn').forEach(b => {
@@ -1742,8 +1892,37 @@ function adCopyCardHtml(c) {
     ${c.tagging_error ? `<p class="muted" style="margin-top:6px">${esc(c.tagging_error)}</p>` : ''}
     ${adCopyPerfHtml(perf)}
     <div class="pain-actions" style="margin-top:10px">
+      <button type="button" class="small ghost ad-copy-edit">編輯</button>
       <button type="button" class="small danger ghost ad-copy-delete">刪除</button>
     </div>
+    <form class="ad-copy-edit-form pc-edit-form" hidden>
+      <div class="grid">
+        <label>主打痛點標籤<input class="edit-primary_pain_tag" value="${esc((c.ai_tags && c.ai_tags.primary_pain_tag) || '')}" placeholder="例：沒時間運動" required></label>
+        <label>次要痛點標籤（選填，最多 2 個，用逗號分隔）<input class="edit-secondary_pain_tags" value="${esc(((c.ai_tags && c.ai_tags.secondary_pain_tags) || []).join('、'))}" placeholder="例：怕踩雷、預算有限"></label>
+      </div>
+      <label>投放版位（可複選）
+        <fieldset class="edit-platform-fieldset">
+          ${['facebook', 'instagram', 'audience_network', 'messenger'].map(v => {
+            const checked = (c.platform || '').split(',').map(s => s.trim()).includes(v);
+            const labelMap = { facebook: 'Facebook', instagram: 'Instagram', audience_network: 'Audience Network', messenger: 'Messenger' };
+            return `<label class="choice"><input type="checkbox" value="${v}" ${checked ? 'checked' : ''}> ${labelMap[v]}</label>`;
+          }).join('')}
+        </fieldset>
+      </label>
+      <p class="muted" style="margin:4px 0 0">文案原文與 hash 不可修改（若貼錯內容請直接刪除重新新增）；下方成效數據若留白則不會覆蓋既有數據。</p>
+      <div class="grid">
+        <label>花費<input class="edit-spend" type="number" step="0.01" placeholder="${perf && perf.spend != null ? perf.spend : '例：500'}"></label>
+        <label>曝光數<input class="edit-impressions" type="number" placeholder="${perf && perf.impressions != null ? perf.impressions : '例：10000'}"></label>
+      </div>
+      <div class="grid">
+        <label>點擊數<input class="edit-clicks" type="number" placeholder="${perf && perf.clicks != null ? perf.clicks : '例：300'}"></label>
+        <label>轉換數<input class="edit-conversions" type="number" placeholder="${perf && perf.conversions != null ? perf.conversions : '例：12'}"></label>
+      </div>
+      <div class="pain-actions">
+        <button type="submit" class="small">儲存修改</button>
+        <button type="button" class="small ghost ad-copy-edit-cancel">取消</button>
+      </div>
+    </form>
   </article>`;
 }
 
@@ -1763,6 +1942,42 @@ function renderAdCopyList() {
         await loadAdCopies();
       } catch (err) { setStatus('⚠ ' + err.message, true); }
     };
+  });
+  // 編輯：修正 AI 標籤化誤判的痛點標籤/投放版位，或手動回填成效數據，
+  // 對應後端新增的 PATCH /api/ad-copies/:id。
+  list.querySelectorAll('.ad-copy-edit').forEach((btn, i) => {
+    const c = adCopiesCache[i];
+    const article = btn.closest('.pain-card');
+    const form = article.querySelector('.ad-copy-edit-form');
+    btn.onclick = () => { form.hidden = false; };
+    form.querySelector('.ad-copy-edit-cancel').onclick = () => { form.hidden = true; };
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const submitBtn = form.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      const platforms = Array.from(form.querySelectorAll('.edit-platform-fieldset input:checked')).map(el => el.value);
+      const secondary = form.querySelector('.edit-secondary_pain_tags').value
+        .split(/[、,，]/).map(s => s.trim()).filter(Boolean).slice(0, 2);
+      const spend = form.querySelector('.edit-spend').value;
+      const impressions = form.querySelector('.edit-impressions').value;
+      const clicks = form.querySelector('.edit-clicks').value;
+      const conversions = form.querySelector('.edit-conversions').value;
+      const hasPerf = spend || impressions || clicks || conversions;
+      const body = {
+        platform: platforms.length ? platforms.join(',') : null,
+        primary_pain_tag: form.querySelector('.edit-primary_pain_tag').value.trim(),
+        secondary_pain_tags: secondary,
+      };
+      if (hasPerf) body.performance = { spend: spend || undefined, impressions: impressions || undefined, clicks: clicks || undefined, conversions: conversions || undefined };
+      try {
+        await api(`/api/ad-copies/${c.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+        setStatus('已更新廣告文案。');
+        await loadAdCopies();
+      } catch (err) {
+        setStatus('⚠ ' + err.message, true);
+        submitBtn.disabled = false;
+      }
+    });
   });
 }
 
@@ -1994,8 +2209,135 @@ if (buildMatrixBtn) {
 
 // ---------------- 初始化 ----------------
 
+// ---------------- 總覽頁（Dashboard） ----------------
+// 新增的「首頁」：橫向彙整目前帳號底下每一組產品/服務設定累積了多少痛點、
+// 已產出幾份報告、追蹤了幾則廣告文案，讓使用者一眼看到目前進度，不用逐一點進
+// 每組設定才看得到。純粹彙整既有 API 已經回傳的資料，不新增任何運算邏輯。
+const priceTierLabel = p => (p.price_tier === 'low' ? '低單價／快速決策' : '高客單／建立信任');
+
+// 帶著指定的產品/服務設定跳到某個功能頁面：從總覽頁的卡片點進去時使用。
+function selectProfileAndGoTo(id, page) {
+  const select = $('#profile-select');
+  if (select) select.value = id;
+  onProfileSelected(id);
+  if (window.goToPage) window.goToPage(page);
+}
+
+async function dashboardProfileStats(profile) {
+  const stats = { profile, painTotal: 0, painConfirmed: 0, adCopyCount: 0, reportCount: 0, lastReportAt: null };
+  try {
+    const points = await api(`/api/domain-profiles/${profile.id}/pain-points`);
+    stats.painTotal = points.length;
+    stats.painConfirmed = points.filter(p => p.review_status === 'confirmed' || p.review_status === 'edited').length;
+  } catch (e) { /* 單組設定的痛點載入失敗不擋整個總覽頁 */ }
+  try {
+    const ads = await api(`/api/ad-copies?domain_profile_id=${profile.id}`);
+    stats.adCopyCount = ads.length;
+  } catch (e) { /* 同上，不擋整頁 */ }
+  const reports = reportLibraryCache.filter(r => r.domain_profile_id === profile.id);
+  stats.reportCount = reports.length;
+  if (reports.length) {
+    stats.lastReportAt = reports.reduce((latest, r) => (!latest || r.created_at > latest ? r.created_at : latest), null);
+    stats.latestReportId = reports.find(r => r.created_at === stats.lastReportAt).id;
+  }
+  return stats;
+}
+
+function dashboardProfileCardHtml(s) {
+  const p = s.profile;
+  const confirmRatio = s.painTotal ? `${s.painConfirmed}／${s.painTotal}` : '0';
+  const lastReport = s.lastReportAt
+    ? new Date(s.lastReportAt).toLocaleDateString('zh-TW')
+    : '尚未產出';
+  return `<article class="dashboard-card" data-id="${esc(p.id)}">
+    <div class="dashboard-card-head">
+      <div>
+        <h3>${esc(profileLabel(p))}</h3>
+        <p class="muted">${esc(p.audience)}｜${esc(priceTierLabel(p))}</p>
+      </div>
+    </div>
+    <div class="dashboard-card-stats">
+      <div class="dashboard-stat"><span class="num">${confirmRatio}</span><small>痛點（已確認／總數）</small></div>
+      <div class="dashboard-stat"><span class="num">${s.reportCount}</span><small>已產出報告</small></div>
+      <div class="dashboard-stat"><span class="num">${s.adCopyCount}</span><small>追蹤中廣告文案</small></div>
+    </div>
+    <p class="muted dashboard-card-updated">最近一次報告：${lastReport}</p>
+    <div class="pain-actions">
+      <button type="button" class="small secondary dc-feedback">語料與痛點 →</button>
+      <button type="button" class="small ghost dc-report" ${s.reportCount ? '' : 'disabled'}>查看最新報告</button>
+      <button type="button" class="small ghost dc-edit">編輯設定</button>
+    </div>
+  </article>`;
+}
+
+async function renderDashboard() {
+  const empty = $('#dashboard-empty');
+  const statsEl = $('#dashboard-stats');
+  const gridEl = $('#dashboard-profile-grid');
+  if (!statsEl || !gridEl) return; // 頁面元素還沒渲染出來（理論上不會發生，防呆用）
+
+  if (!profilesCache.length) {
+    if (empty) empty.hidden = false;
+    statsEl.hidden = true;
+    gridEl.innerHTML = '';
+    return;
+  }
+  if (empty) empty.hidden = true;
+  statsEl.hidden = false;
+  gridEl.innerHTML = '<p class="muted">正在彙整各產品/服務設定的統計資料…</p>';
+
+  const allStats = await Promise.all(profilesCache.map(dashboardProfileStats));
+
+  const totalPain = allStats.reduce((sum, s) => sum + s.painTotal, 0);
+  const totalConfirmed = allStats.reduce((sum, s) => sum + s.painConfirmed, 0);
+  const totalReports = allStats.reduce((sum, s) => sum + s.reportCount, 0);
+  const totalAdCopies = allStats.reduce((sum, s) => sum + s.adCopyCount, 0);
+  statsEl.innerHTML = `
+    <div class="dashboard-stat-card"><span class="num">${profilesCache.length}</span><small>產品／服務設定</small></div>
+    <div class="dashboard-stat-card"><span class="num">${totalConfirmed}／${totalPain}</span><small>累積痛點（已確認／總數）</small></div>
+    <div class="dashboard-stat-card"><span class="num">${totalReports}</span><small>累積產出報告</small></div>
+    <div class="dashboard-stat-card"><span class="num">${totalAdCopies}</span><small>追蹤中廣告文案</small></div>
+  `;
+
+  gridEl.innerHTML = allStats.map(dashboardProfileCardHtml).join('');
+  gridEl.querySelectorAll('.dashboard-card').forEach(card => {
+    const id = card.dataset.id;
+    const s = allStats.find(x => x.profile.id === id);
+    card.querySelector('.dc-feedback').onclick = () => selectProfileAndGoTo(id, 'feedback');
+    card.querySelector('.dc-edit').onclick = () => {
+      selectProfileAndGoTo(id, 'profile');
+      const profile = profilesCache.find(p => p.id === id);
+      if (profile) setProfileFormMode('edit', profile);
+    };
+    const reportBtn = card.querySelector('.dc-report');
+    if (s && s.reportCount) {
+      reportBtn.onclick = async () => {
+        try {
+          const result = await api(`/api/insight-reports/${s.latestReportId}`);
+          renderReport(result.report, '總覽頁快速查看');
+          if (window.goToPage) window.goToPage('report');
+          setTimeout(() => { const el = $('#report-result'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
+        } catch (err) { setStatus('⚠ ' + err.message, true); }
+      };
+    }
+  });
+}
+
+const dashboardNewProfileBtn = $('#dashboard-new-profile-btn');
+if (dashboardNewProfileBtn) {
+  dashboardNewProfileBtn.onclick = () => {
+    if (window.goToPage) window.goToPage('profile');
+    setProfileFormMode('create');
+  };
+}
+
 async function init() {
   await loadProfiles();
   loadSwipes();
+  // 報告資料庫原本用 <details> 展開時才 lazy load；改成側邊欄的獨立頁面之後沒有「展開」
+  // 這個時機點了，直接在啟動時載入一次即可（報告數量對一般使用量來說不會大到需要真的延遲載入）。
+  // renderDashboard() 需要 reportLibraryCache 已經載入好才能算出每組設定的報告數量，所以要 await。
+  await loadReportLibrary();
+  renderDashboard();
 }
 if (window.authReady) window.authReady.then(init); else init();
