@@ -2,6 +2,7 @@ const { getUserFromRequest, restRequest, sendError } = require('./_lib/supabase'
 const { call } = require('./_lib/provider');
 const { isSensitiveIndustry } = require('./_lib/compliance');
 const { buildMatrix } = require('./ad-copies-hub');
+const { buildReportDocx } = require('./_lib/report-docx');
 
 // 這支取代了原本的文案生成（generation-requests-hub.js）。
 // 對應企劃書「痛點驗證層」與「成效回饋迴路」的精神：報告裡的每一個數字都是程式碼依
@@ -286,10 +287,27 @@ async function handleCreate(req, res, user) {
   }
 }
 
+// 潛在受眾地圖頁面新增的「匯出結果」功能：同一支報告，多加一個 ?format=docx 查詢參數
+// 就能直接下載成 Word 文件（可離線保存或寄送客戶），不需要另外開一支 API。
+// 沒有帶 format（或帶其他值）維持原本回傳 JSON 的行為，前端渲染報告內容用的是這條路徑。
+async function handleGetDocx(res, user, saved) {
+  try {
+    const buffer = await buildReportDocx(saved.report, '匯出時間：' + new Date(saved.created_at || Date.now()).toLocaleString('zh-TW'));
+    const dp = (saved.report && saved.report.domain_profile) || {};
+    const safeName = (dp.domain_tag || '洞察報告').replace(/[\\/:*?"<>|]/g, '_');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeName)}_${saved.id}.docx"`);
+    return res.status(200).send(buffer);
+  } catch (err) {
+    return sendError(res, 500, '匯出 Word 文件失敗：' + err.message);
+  }
+}
+
 async function handleGet(req, res, user, id) {
   try {
     const [saved] = await restRequest(`insight_reports?id=eq.${id}&user_id=eq.${user.id}&select=*`);
     if (!saved) return sendError(res, 404, '找不到對應的報告。');
+    if ((req.query || {}).format === 'docx') return handleGetDocx(res, user, saved);
     return res.status(200).json({ id: saved.id, status: saved.status, report: saved.report });
   } catch (err) {
     return sendError(res, 500, err.message);
