@@ -98,7 +98,15 @@
 <form id="profile-form" hidden>
 <div class="grid">
 <label>產業／領域<input name="domain_tag" placeholder="例：健身、線上教育、保健食品" required></label>
-<label>目標受眾<input name="audience" placeholder="例：25–40 歲久坐上班族" required></label>
+</div>
+<div class="label-manager">
+<label style="margin-bottom:8px">目標受眾（可新增多個）</label>
+<div id="profile-audience-chips" class="label-chips"></div>
+<div class="label-add-row">
+<input type="text" id="profile-audience-input" placeholder="例：25–40 歲久坐上班族" maxlength="60">
+<button type="button" id="profile-audience-add" class="ghost small">＋ 新增受眾</button>
+</div>
+<p class="muted" style="margin-top:6px">不同的目標受眾各自代表一群人，之後萃取痛點、分析潛在受眾、產出報告時都會一併考慮這裡列出的所有受眾。</p>
 </div>
 <fieldset><legend>價格帶</legend>
 <label class="choice"><input type="radio" name="price_tier" value="low" checked> 低單價／快速決策</label>
@@ -185,6 +193,12 @@
 </div>
 <div id="suggest-preview"></div>
 <hr class="divider">
+<p class="muted" style="margin-bottom:10px">或上傳一張截圖（例如顧客訊息、留言、評論畫面），AI 會直接看圖分析出一組痛點草稿，帶入下方欄位讓你檢視修改後再送出。</p>
+<input type="file" id="pain-image-input" accept="image/png,image/jpeg,image/webp,image/gif">
+<div id="pain-image-preview" class="image-preview-row"></div>
+<button type="button" id="pain-image-submit" class="secondary" disabled>上傳並辨識圖片</button>
+<p id="pain-image-status" class="muted" style="margin-top:8px"></p>
+<hr class="divider">
 <form id="manual-pain-form">
 <div class="grid">
 <label>表層問題<input name="surface_problem" placeholder="例：下班太累，運動難以持續" required></label>
@@ -239,10 +253,11 @@
 <form id="ad-copy-form">
 <label>廣告文案內容<textarea name="raw_content" required placeholder="貼上一則已投放的 Meta 廣告文案…"></textarea></label>
 <fieldset><legend>投放版位（選填，可複選）</legend>
-<label class="choice"><input type="checkbox" name="platform" value="facebook"> Facebook</label>
-<label class="choice"><input type="checkbox" name="platform" value="instagram"> Instagram</label>
-<label class="choice"><input type="checkbox" name="platform" value="audience_network"> Audience Network</label>
-<label class="choice"><input type="checkbox" name="platform" value="messenger"> Messenger</label>
+<div id="ad-placement-list" class="checklist-with-manage"></div>
+<div class="label-add-row">
+<input type="text" id="ad-placement-input" placeholder="新增投放版位，例如：TikTok" maxlength="20">
+<button type="button" id="ad-placement-add" class="ghost small">＋ 新增版位</button>
+</div>
 </fieldset>
 <div class="grid">
 <label>花費（選填）<input name="spend" type="number" step="0.01" placeholder="例：500"></label>
@@ -320,6 +335,7 @@
 <label>來源連結（選填）<input name="source_url" placeholder="https://…"></label>
 <label>產業提示（選填）<input name="industry_tag" placeholder="例：健身"></label>
 </div>
+<label>歸類商品／服務（選填）<select id="swipe-product-select" name="domain_profile_id"><option value="">— 不指定 —</option></select></label>
 <button type="submit">分析並儲存</button>
 </form>
 <div id="swipe-status" style="margin-top:10px"></div>
@@ -329,6 +345,7 @@
 <label>來源連結（選填）<input id="swipe-image-source-url" placeholder="https://…"></label>
 <label>產業提示（選填）<input id="swipe-image-industry-tag" placeholder="例：健身"></label>
 </div>
+<label>歸類商品／服務（選填）<select id="swipe-image-product-select"><option value="">— 不指定 —</option></select></label>
 <label>分析方式
 <select id="swipe-image-mode">
 <option value="ocr">先辨識文字，再依文字分析（適合文字為主的截圖）</option>
@@ -345,6 +362,7 @@
 <select id="swipe-filter-industry"><option value="">全部產業／領域</option></select>
 <select id="swipe-filter-framework"><option value="">全部框架</option></select>
 <select id="swipe-filter-angle"><option value="">全部角度</option></select>
+<select id="swipe-filter-product"><option value="">全部商品／服務</option></select>
 <label class="choice"><input type="checkbox" id="swipe-filter-has-pain"> 只顯示已萃取痛點</label>
 <button type="button" id="swipe-filter-reset" class="ghost small">清除篩選</button>
 </div>
