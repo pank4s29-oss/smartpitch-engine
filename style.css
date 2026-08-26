@@ -494,56 +494,25 @@ details.panel[open] summary { margin-bottom: 16px; }
 .match-card .match-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .match-card .match-score { font-family: var(--font-mono); font-size: 11px; color: var(--teal-dark); white-space: nowrap; }
 
-/* ---------- 洞察報告資料庫 ---------- */
-
-.report-library-card {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 12px 16px; margin-bottom: 8px; background: #fff;
-  display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
-}
-.report-library-card .rlc-meta { font-size: 13px; }
-.report-library-card .rlc-meta .rlc-label { font-weight: 600; }
-.report-library-card .rlc-meta .rlc-sub { color: var(--ink-soft); font-size: 12px; margin-top: 2px; }
-
 /* ---------- 重複偵測提示 / 一般 confirm 對話樣式沿用瀏覽器原生 ---------- */
 
 @media print {
-  /* #composer-panel／#profile-scope 是改版前的舊容器 id，現在已經不存在，這裡
-     順帶換成目前實際的版面元素（.sidebar／.topbar），否則列印報告時側邊欄跟
-     頂欄會一起印出來。 */
   .sidebar, .topbar, header, #auth-panel, #status, details.swipe,
-  #report-library-panel, .step-actions, .r-sort, .sort-label, #report-history, button { display: none !important; }
-  .report-panel { box-shadow: none; border: none; padding: 0; }
-  body { background: #fff; }
-  .page-container, main { max-width: 100%; padding: 0; }
-
-  /* 「受眾痛點逐項分析」預設在畫面上是收合的（.r-breakdown[hidden]），這是這份
-     報告的主要內容。過去列印／匯出 PDF 時完全沒有處理這件事：如果使用者在按下
-     「列印／匯出 PDF」之前沒有先手動點開「顯示逐項分析」，瀏覽器的原生 hidden
-     屬性會讓整段逐項分析在列印結果裡完全消失，PDF 只剩摘要統計、看起來像是
-     「內容匯出不出來」。app.js 的 r-print 按鈕現在會在呼叫 window.print() 之前
-     自動展開這個區塊，這裡再加一道 CSS 保底：就算展開失敗或有其他呼叫路徑，
-     列印時一律強制顯示，不依賴 JS 有沒有先執行。 */
-  .r-breakdown, .r-breakdown[hidden] { display: block !important; }
-
-  /* 每一筆痛點卡片不要被硬生生從中間切到下一頁，讀者不用為了看完同一筆痛點的
-     資訊而在紙本／PDF 頁面之間來回翻找。 */
-  .report-row { break-inside: avoid; page-break-inside: avoid; }
-
-  /* 逐項分析另起一段列印區塊，跟前面的摘要統計／導讀視覺上分開，避免整份報告
-     擠成密密麻麻的一長條。 */
-  .report-detail-head { break-before: page; page-break-before: always; }
-
-  /* 統計數字方塊、風險提示、成效亮點都是靠背景色跟文字顏色搭配區分類型，瀏覽器
-     預設「省墨模式」會把背景色整個拿掉，導致這些區塊看起來像沒有樣式的一般文字、
-     甚至跟白色背景混在一起難以辨識。強制保留背景色，PDF 看起來才會跟畫面上一致。 */
-  .report-panel, .stat-cell, .risk-flag, .framework-box, .stamp, .report-row {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-    color-adjust: exact;
-  }
+  #report-library-panel, .step-actions, button, .profile-required-hint,
+  #page-dashboard, #page-profile, #page-feedback, #page-adcopies, #page-swipe { display: none !important; }
+  body { background: #fff !important; color: #17231f; }
+  .app-shell, .app-main, main, .page-container, .page, .requires-profile { display: block !important; max-width: none !important; width: auto !important; padding: 0 !important; margin: 0 !important; }
+  #page-segments { display: block !important; }
+  #page-segments > .requires-profile > .panel:first-child { display: none !important; }
+  #report-result, #report-result[hidden] { display: block !important; }
+  .report-panel { display: block !important; box-shadow: none !important; border: 0 !important; padding: 0 !important; margin: 0 !important; }
+  .report-panel .step-heading { display: flex !important; border-bottom: 2px solid #2f6f3e; padding-bottom: 12px; margin-bottom: 20px; }
+  .report-panel .step-heading b { display: none !important; }
+  .pain-card { break-inside: avoid; page-break-inside: avoid; border: 1px solid #c8d9d0; box-shadow: none !important; margin: 0 0 12px !important; }
+  .divider { margin: 22px 0 !important; }
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  @page { size: A4; margin: 16mm 14mm; }
 }
-
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
@@ -768,20 +737,6 @@ details.meta-sync > summary {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* ============================================================================
- * 洞察報告資料庫：卡片內的操作列（查看／刪除並排）
- * ============================================================================ */
-.report-library-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.rlc-actions {
-  display: flex;
-  gap: 6px;
-  flex: none;
-}
 /* ============================================================================
  * App Shell：左側功能列表 ＋ 右側頁面內容
  * 對應改版後的 index.html：.app-shell 底下是 .sidebar（固定寬度導航列）與
