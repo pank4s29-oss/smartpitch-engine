@@ -171,6 +171,13 @@ fieldset { border: none; padding: 0; margin: 0 0 14px; }
 legend { font-size: 13px; font-weight: 500; color: var(--ink-soft); padding: 0; margin-bottom: 8px; }
 .choice { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 0 14px 6px 0; }
 .choice input { width: auto; margin: 0; }
+.checklist-with-manage { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 10px; }
+.placement-choice { display: inline-flex; align-items: center; gap: 4px; }
+.placement-delete {
+  border: none; background: transparent; color: var(--ink-soft); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+}
+.placement-delete:hover { background: rgba(24,38,32,0.12); color: var(--ink); }
 
 button {
   font: inherit;
