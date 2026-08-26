@@ -65,8 +65,14 @@ async function handleGetDocx(res, data) {
   try {
     const buffer = await buildReportDocx(data, '匯出時間：' + new Date().toLocaleString('zh-TW'));
     const safeName = (data.domain_profile.domain_tag || '受眾報告').replace(/[\\/:*?"<>|]/g, '_');
+    if (!Buffer.isBuffer(buffer) || buffer.length < 1000) {
+      throw new Error('產生的 Word 文件內容無效或不完整。');
+    }
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeName)}.docx"`);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader('Content-Disposition', `attachment; filename="report.docx"; filename*=UTF-8''${encodeURIComponent(safeName)}.docx`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     return res.status(200).send(buffer);
   } catch (err) {
     return sendError(res, 500, '匯出 Word 文件失敗：' + err.message);
