@@ -323,7 +323,7 @@ async function refreshProfileScope() {
   // loadPainPoints() 先跑完，是因為潛在受眾地圖的卡片要顯示「對應哪些痛點」的標籤，
   // 需要 painPointsCache 已經有資料才能對得上，不能跟 loadSegments() 同時搶著跑。
   await loadPainPoints();
-  await Promise.all([loadSourceLabels(), loadFeedback(), loadReportHistory(), loadAdCopies(), loadSegments()]);
+  await Promise.all([loadSourceLabels(), loadFeedback(), loadAdCopies(), loadSegments()]);
 }
 
 // ---------------- 語料來源分類管理 ----------------
@@ -790,12 +790,7 @@ function buildPainCard(p, solution, extraClass) {
   stamp.className = 'stamp pc-stamp ' + status_;
   stamp.textContent = STAMP_LABEL[status_] || status_;
 
-  const evidence = Array.isArray(p.evidence_source) ? p.evidence_source : [];
   const quoteEl = node.querySelector('.pc-quote');
-  if (evidence.length && evidence[0].quote) {
-    quoteEl.className = 'pain-quote pc-quote';
-    quoteEl.textContent = `「${evidence[0].quote}」`;
-  }
 
   // 完整陳述（detail）：之前萃取/建議時就已經寫入資料庫，但畫面上一直沒有顯示出來，
   // 只看得到一句話的表層問題／深層渴望，訊息量不夠。這裡補上，讓使用者不用再腦補情境。
@@ -806,11 +801,8 @@ function buildPainCard(p, solution, extraClass) {
     node.querySelector('.pc-quote').after(detailEl);
   }
 
-  node.querySelector('.pc-source').textContent = SOURCE_LABEL[p.source] || p.source || '—';
-  node.querySelector('.pc-evidence').innerHTML = `佐證 <span class="num">${evidence.length}</span> 則語料`;
-  node.querySelector('.pc-confidence').innerHTML = p.confidence_score != null
-    ? `置信度 <span class="num">${Math.round(p.confidence_score * 100)}%</span>`
-    : '置信度 <span class="num">—</span>';
+  const sourceEl = node.querySelector('.pc-source');
+  if (sourceEl) sourceEl.textContent = SOURCE_LABEL[p.source] || p.source || '—';
 
   const solutionEl = node.querySelector('.pc-solution');
   solutionEl.innerHTML = solution
@@ -1332,7 +1324,7 @@ if (segmentsBtn) {
 }
 
 // ---------------- 產出報告與匯出（現已併入「潛在受眾地圖」頁面，不再是獨立頁籤） ----------------
-// 報告不再是另外呼叫 AI 產生、存成快照的「洞察報告」（AI 導讀／覆蓋率統計／風險提示／
+// 報告不再是另外呼叫 AI 產生、存成快照的獨立分析（AI 導讀／覆蓋率統計／風險提示／
 // 語料佐證與置信度／廣告成效比對），而是直接把「受眾痛點列表」與「潛在受眾地圖」這兩份
 // 系統本來就有、使用者已經在看的清單，原樣組成一份可離線保存或寄送客戶的報告。
 // 拿掉語料佐證與置信度的理由：顧客／網友在語料裡提到什麼，本來就不等於「這個受眾一定
@@ -1424,22 +1416,15 @@ function renderReport(data) {
   const segments = Array.isArray(data.segments) ? data.segments : [];
   const painMap = new Map(points.map(p => [p.id, p]));
 
-  const solutionHtml = data.solution
-    ? `<div class="framework-box"><b>${esc(data.solution.product_name)}</b>${data.solution.core_selling_point ? ' — ' + esc(data.solution.core_selling_point) : ''}</div>`
-    : '<p class="muted">尚未在「產品／服務設定」中填寫解決方案。</p>';
-
   container.innerHTML = `<div class="panel report-panel">
     <div class="step-heading">
       <b>&#9679;</b>
-      <div><h2>報告</h2>${dp.business_constraints_label ? `<p class="muted">呈現媒介限制：${esc(dp.business_constraints_label)}</p>` : ''}</div>
+      <div><h2>受眾分析報告</h2>${dp.business_constraints_label ? `<p class="muted">呈現媒介限制：${esc(dp.business_constraints_label)}</p>` : ''}</div>
       <div class="step-actions">
         <button type="button" class="ghost small report-export-docx">匯出 Word 文件 →</button>
         <button type="button" class="ghost small report-print">列印／匯出 PDF</button>
       </div>
     </div>
-    <h3>產品／解決方案</h3>
-    ${solutionHtml}
-    <hr class="divider">
     <h3>受眾痛點列表（共 ${points.length} 筆）</h3>
     ${points.length ? points.map(reportPainPointCardHtml).join('') : '<p class="muted">此產品/服務設定尚無痛點資料。</p>'}
     <hr class="divider">
@@ -1467,7 +1452,7 @@ $('#generate-report-btn').onclick = async () => {
   setStatus('正在彙整目前的痛點與潛在受眾清單…');
   try {
     await generateReport(currentProfileId);
-    setStatus('報告已產出。');
+    setStatus('報告已整理完成。');
   } catch (err) { setStatus('⚠ ' + err.message, true); }
   finally { btn.disabled = false; }
 };
@@ -1765,120 +1750,9 @@ async function loadSwipes() {
   } catch (e) { swipeList.textContent = '無法載入資料庫。'; }
 }
 
-// ---------------- 洞察報告資料庫（跨產品/服務設定瀏覽） ----------------
-// 篩選選項（領域／受眾／價格帶）直接沿用已經載入的 profilesCache，不用另外打 API 拿 distinct 值，
-// 因為報告一定歸屬在某個產品/服務設定底下，設定本身的清單前端本來就有。
+// 報告資料庫與快照功能已移除；報告僅由目前設定即時整理。
 
-let reportLibraryCache = [];
-
-function reportLibraryFilterOptions() {
-  const domainSelect = $('#report-filter-domain');
-  const audienceSelect = $('#report-filter-audience');
-  const tierSelect = $('#report-filter-tier');
-  if (!domainSelect || !audienceSelect || !tierSelect) return;
-  const domains = [...new Set(profilesCache.map(p => p.domain_tag).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
-  const audiences = [...new Set(profilesCache.flatMap(p => audiencesOf(p)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
-  fillFilterSelect(domainSelect, domains);
-  fillFilterSelect(audienceSelect, audiences);
-  if (!tierSelect.dataset.built) {
-    tierSelect.innerHTML = tierSelect.innerHTML + `<option value="low">低單價／快速決策</option><option value="high">高客單／建立信任</option>`;
-    tierSelect.dataset.built = 'true';
-  }
-}
-
-function reportLibraryCardHtml(r) {
-  const profile = profilesCache.find(p => p.id === r.domain_profile_id);
-  const label = profile ? profileLabel(profile) : '（設定已刪除）';
-  const c = r.coverage || {};
-  const created = new Date(r.created_at).toLocaleString('zh-TW', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  return `<div class="report-library-card" data-id="${esc(r.id)}">
-    <div class="rlc-meta">
-      <div class="rlc-label">${esc(label)}</div>
-      <div class="rlc-sub">${created}｜痛點 ${c.total_pain_points ?? '—'} 筆，已確認 ${c.confirmed ?? '—'} 筆${profile ? '｜' + esc(profile.price_tier === 'low' ? '低單價／快速決策' : '高客單／建立信任') : ''}</div>
-    </div>
-    <div class="rlc-actions">
-      <button type="button" class="small secondary rlc-view">查看報告</button>
-      <button type="button" class="small danger ghost rlc-delete">刪除</button>
-    </div>
-  </div>`;
-}
-
-async function loadReportLibrary() {
-  const listEl = $('#report-library-list');
-  if (!listEl) return;
-  try {
-    reportLibraryCache = await api('/api/insight-reports');
-    reportLibraryFilterOptions();
-    renderReportLibrary();
-  } catch (e) { listEl.innerHTML = '<p class="muted">無法載入報告資料庫。</p>'; }
-}
-
-function renderReportLibrary() {
-  const listEl = $('#report-library-list');
-  if (!listEl) return;
-  const domainFilter = $('#report-filter-domain') ? $('#report-filter-domain').value : '';
-  const audienceFilter = $('#report-filter-audience') ? $('#report-filter-audience').value : '';
-  const tierFilter = $('#report-filter-tier') ? $('#report-filter-tier').value : '';
-
-  const filtered = reportLibraryCache.filter(r => {
-    const profile = profilesCache.find(p => p.id === r.domain_profile_id);
-    if (domainFilter && (!profile || profile.domain_tag !== domainFilter)) return false;
-    if (audienceFilter && (!profile || !audiencesOf(profile).includes(audienceFilter))) return false;
-    if (tierFilter && (!profile || profile.price_tier !== tierFilter)) return false;
-    return true;
-  });
-
-  listEl.innerHTML = filtered.length
-    ? filtered.map(reportLibraryCardHtml).join('')
-    : '<p class="muted">沒有符合篩選條件的報告。</p>';
-
-  listEl.querySelectorAll('.rlc-view').forEach(btn => {
-    const card = btn.closest('.report-library-card');
-    btn.onclick = async () => {
-      try {
-        const result = await api(`/api/insight-reports/${card.dataset.id}`);
-        renderReport(result.report, '報告資料庫', result.id);
-        // #report-result 現在是「潛在受眾地圖」頁面（page-segments）的一部分，
-        // 從報告資料庫（page-library）查看時要先切過去，不然渲染完使用者在原頁面看不到任何變化。
-        if (window.goToPage) window.goToPage('segments');
-        setTimeout(() => { const el = $('#report-result'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
-      } catch (err) { setStatus('⚠ ' + err.message, true); }
-    };
-  });
-  listEl.querySelectorAll('.rlc-delete').forEach(btn => {
-    const card = btn.closest('.report-library-card');
-    btn.onclick = async () => {
-      if (!confirm('確定要刪除這份報告嗎？此操作無法復原。')) return;
-      btn.disabled = true;
-      try {
-        await api(`/api/insight-reports/${card.dataset.id}`, { method: 'DELETE' });
-        reportLibraryCache = reportLibraryCache.filter(r => r.id !== card.dataset.id);
-        renderReportLibrary();
-        setStatus('已刪除報告。');
-      } catch (err) { setStatus('⚠ ' + err.message, true); btn.disabled = false; }
-    };
-  });
-}
-
-['report-filter-domain', 'report-filter-audience', 'report-filter-tier'].forEach(id => {
-  const el = $('#' + id);
-  if (el) el.addEventListener('change', renderReportLibrary);
-});
-const reportFilterReset = $('#report-filter-reset');
-if (reportFilterReset) {
-  reportFilterReset.onclick = () => {
-    ['report-filter-domain', 'report-filter-audience', 'report-filter-tier'].forEach(id => { const el = $('#' + id); if (el) el.value = ''; });
-    renderReportLibrary();
-  };
-}
-const reportLibraryPanel = $('#report-library-panel');
-if (reportLibraryPanel) {
-  // 用 details 的 toggle 事件延遲載入，使用者沒展開這個區塊就不用預先打 API。
-  let reportLibraryLoaded = false;
-  reportLibraryPanel.addEventListener('toggle', () => {
-    if (reportLibraryPanel.open && !reportLibraryLoaded) { reportLibraryLoaded = true; loadReportLibrary(); }
-  });
-}
+// 舊版洞察報告資料庫與快照操作已移除；報告由目前設定即時整理。
 
 // ---------------- 投放版位（使用者自訂清單）----------------
 // 比照語料來源分類的做法：使用者層級共用一份清單（不綁定單一產品/服務設定），
@@ -2259,7 +2133,7 @@ if (metaSyncForm) {
     const data = Object.fromEntries(new FormData(e.target));
     const btn = e.target.querySelector('button[type="submit"]');
     btn.disabled = true;
-    setStatus('正在向 Meta Graph API 同步廣告洞察報告與素材，可能需要一些時間…');
+    setStatus('正在向 Meta Graph API 同步廣告成效與素材，可能需要一些時間…');
     try {
       const result = await api('/api/ad-copies/meta-sync', {
         method: 'POST',
