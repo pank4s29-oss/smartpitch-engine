@@ -5,7 +5,10 @@ create extension if not exists pgcrypto;
 create table public.domain_profiles (
   id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users(id) on delete cascade,
   domain_tag text not null, audience text not null, price_tier text not null check (price_tier in ('low','high')),
-  business_constraints jsonb not null default '[]'::jsonb, created_at timestamptz not null default now()
+  business_constraints jsonb not null default '[]'::jsonb,
+  primary_conversion_event text not null default 'lead',
+  workflow_notes text not null default '',
+  created_at timestamptz not null default now()
 );
 
 -- 報告資料庫：每筆報告保存產出當下的痛點列表與潛在受眾地圖快照，
