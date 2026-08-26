@@ -1,24 +1,43 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>受眾策略引擎｜痛點驗證與 Meta 廣告效益驗證工作台</title><link rel="stylesheet" href="/style.css"></head><body>
-<main>
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>受眾策略引擎｜痛點驗證與 Meta 廣告效益驗證工作台</title><link rel="stylesheet" href="/style.css"></head><body class="no-profile-selected">
+<div class="app-shell">
 
-<header>
-<div>
-<p class="eyebrow">AUDIENCE STRATEGY & META AD VALIDATION ENGINE</p>
-<h1>先驗證受眾洞察，再用真實花費數據驗證。</h1>
-<p class="subtitle">匯入真實顧客語料、萃取並驗證痛點；廣告上線後回灌 Meta 成效數據，用「點閱率、單次轉換成本、轉換率、廣告投報率」這些真實數據交叉驗證哪個痛點真的有效——每個數字都算得出來源，不是模型憑常識猜的。</p>
+<aside class="sidebar" id="sidebar">
+<div class="sidebar-brand">
+<p class="eyebrow">STRATEGY ENGINE</p>
+<h1 class="sidebar-title">受眾策略引擎</h1>
 </div>
-<span class="badge">痛點驗證工作台</span>
-</header>
+<nav class="sidebar-nav" aria-label="主要功能">
+<button type="button" class="nav-item" data-page="dashboard"><span class="nav-item-icon" aria-hidden="true">⌂</span>總覽</button>
+<button type="button" class="nav-item" data-page="profile"><span class="nav-item-icon" aria-hidden="true">01</span>產品／服務設定</button>
+<button type="button" class="nav-item nav-item-scoped" data-page="feedback"><span class="nav-item-icon" aria-hidden="true">02</span>語料與痛點</button>
+<button type="button" class="nav-item nav-item-scoped" data-page="segments"><span class="nav-item-icon" aria-hidden="true">03</span>潛在受眾地圖</button>
+<button type="button" class="nav-item nav-item-scoped" data-page="report"><span class="nav-item-icon" aria-hidden="true">04</span>洞察報告</button>
+<button type="button" class="nav-item nav-item-scoped" data-page="adcopies"><span class="nav-item-icon" aria-hidden="true">05</span>Meta 廣告效益</button>
+<hr class="sidebar-divider">
+<button type="button" class="nav-item" data-page="library"><span class="nav-item-icon" aria-hidden="true">◍</span>報告資料庫</button>
+<button type="button" class="nav-item" data-page="swipe"><span class="nav-item-icon" aria-hidden="true">◍</span>產業文案手法庫</button>
+</nav>
+</aside>
 
-<!-- 身份確認：改為左上角的迷你角落元件，預設只顯示一行狀態文字，點擊才展開完整表單。
-     內部所有 id（auth-status／auth-form／auth-signin／auth-signup／auth-signout）都維持
-     原本的命名，交由既有的 auth.js 繼續控管登入/註冊邏輯本身，這裡只負責外觀與收合/展開，
-     不介入 auth.js 的行為，降低把登入功能改壞的風險。-->
+<div class="app-main">
+
+<header class="topbar">
+<button type="button" id="sidebar-toggle" class="ghost small sidebar-toggle-btn" aria-label="展開／收合選單" aria-expanded="false">☰</button>
+<p class="topbar-title" id="topbar-page-title">總覽</p>
+
+<!-- 身份確認：內部所有 id（auth-status／auth-form／auth-signin／auth-signup／auth-signout）
+     都維持原本的命名，交由既有的 auth.js 繼續控管登入/註冊邏輯本身，這裡只調整外觀與
+     擺放位置（從原本畫面右上角的浮動角落，改成置於頂欄右側，跟著整體排版走），
+     不介入 auth.js／account-corner.js 的行為，降低把登入功能改壞的風險。-->
 <div id="account-corner">
 <div class="account-corner-bar">
 <button type="button" id="account-corner-toggle" aria-haspopup="true">
+<span class="account-avatar" aria-hidden="true">
+<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
 <span class="account-corner-dot" aria-hidden="true"></span>
+</span>
 <span id="account-corner-label">尚未登入</span>
+<span class="account-corner-chevron" aria-hidden="true">⌄</span>
 </button>
 <button type="button" id="account-settings-btn" class="ghost small" hidden title="帳號設定" aria-label="帳號設定">⚙</button>
 </div>
@@ -41,27 +60,31 @@
 </section>
 </div>
 </div>
-
-<!-- 帳號設定：獨立於登入面板之外的功能按鍵，登入後才會顯示在使用者名稱旁邊，
-     點擊後開啟這個小型 modal，讓「登入/註冊」與「修改個人帳號設定」是兩件分開的事。 -->
-<div id="account-settings-overlay" hidden>
-<div id="account-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="account-settings-title">
-<div class="step-heading"><b>⚙</b><div><h2 id="account-settings-title">帳號設定</h2><p>管理你的顯示名稱與帳號資訊。</p></div></div>
-<p class="muted" id="account-settings-email"></p>
-<label>顯示名稱<input id="account-settings-name-input" type="text" maxlength="30" placeholder="未設定則顯示 Email"></label>
-<div class="auth-actions">
-<button type="button" id="account-settings-save">儲存顯示名稱</button>
-<button type="button" id="account-settings-close" class="ghost">關閉</button>
-</div>
-<hr class="divider">
-<button type="button" id="account-settings-signout" class="danger ghost small">登出</button>
-</div>
-</div>
+</header>
 
 <section id="status" aria-live="polite"></section>
 
+<main class="page-container">
 
-<section id="composer-panel">
+<section class="page" data-page="dashboard" id="page-dashboard">
+<div class="page-intro">
+<p class="eyebrow">AUDIENCE STRATEGY & META AD VALIDATION ENGINE</p>
+<h1>先驗證受眾洞察，再用真實花費數據驗證。</h1>
+<p class="subtitle">匯入真實顧客語料、萃取並驗證痛點；廣告上線後回灌 Meta 成效數據，用「點閱率、單次轉換成本、轉換率、廣告投報率」這些真實數據交叉驗證哪個痛點真的有效——每個數字都算得出來源，不是模型憑常識猜的。</p>
+</div>
+
+<div id="dashboard-empty" hidden>
+<section class="panel">
+<div class="step-heading"><b>＋</b><div><h2>還沒有任何產品／服務設定</h2><p>建立第一組設定，開始匯入語料、萃取痛點，並產出洞察報告。</p></div></div>
+<button type="button" id="dashboard-new-profile-btn">建立第一組產品／服務設定 →</button>
+</section>
+</div>
+
+<div id="dashboard-stats" class="dashboard-stats-row" hidden></div>
+<div id="dashboard-profile-grid" class="dashboard-grid"></div>
+</section>
+
+<section class="page" data-page="profile" id="page-profile">
 
 <section class="panel">
 <div class="step-heading"><b>01</b><div><h2>產品／服務設定</h2><p>選擇既有的產品／服務設定，或建立新的一組——不同產品或服務請分開建立，各自產生對應的痛點與受眾分析。</p></div></div>
@@ -100,7 +123,11 @@
 </form>
 </section>
 
-<div id="profile-scope" hidden>
+</section>
+
+<section class="page" data-page="feedback" id="page-feedback">
+<p class="profile-required-hint muted">請先在「產品／服務設定」頁面選擇或建立一組設定，才能匯入語料與記錄痛點。</p>
+<div class="requires-profile">
 
 <section class="panel">
 <div class="step-heading"><b>02</b><div><h2>語料匯入與痛點紀錄</h2><p>新增一則真實語料時，請同時填寫這則語料對應的痛點——語料是佐證，痛點才是後續報告與文案會用到的洞察，兩者一起建立才不會脫節。</p></div></div>
@@ -151,7 +178,7 @@
 <div id="matched-templates-result"></div>
 <details class="advanced-tools">
 <summary>進階：AI 輔助草稿／不綁語料手動新增</summary>
-<p class="muted" style="margin:10px 0 12px">以下三項都沒有直接綁定真實語料佐證，僅供發想或補充參考。若已累積 Meta 廣告成效數據，建議優先參考下方「Meta 廣告效益驗證」區塊的痛點轉換矩陣，那是用真實成效驗證過的結果。</p>
+<p class="muted" style="margin:10px 0 12px">以下三項都沒有直接綁定真實語料佐證，僅供發想或補充參考。若已累積 Meta 廣告成效數據，建議優先參考「Meta 廣告效益驗證」頁面的痛點轉換矩陣，那是用真實成效驗證過的結果。</p>
 <div class="step-actions">
 <button type="button" id="swipe-import-btn" class="ghost small">從文案手法庫帶入</button>
 <button type="button" id="suggest-btn" class="ghost small">AI 建議草稿</button>
@@ -171,18 +198,40 @@
 <div id="pain-list"><p class="muted">尚無痛點，請先於上方新增語料並填寫對應痛點。</p></div>
 </section>
 
+</div>
+</section>
+
+<section class="page" data-page="segments" id="page-segments">
+<p class="profile-required-hint muted">請先在「產品／服務設定」頁面選擇或建立一組設定。</p>
+<div class="requires-profile">
+
 <section class="panel">
 <div class="step-heading"><b>03</b><div><h2>潛在受眾地圖</h2><p>反推目前的痛點清單背後，可能存在哪些沒被明講、但真實存在的細分受眾。</p><div class="step-actions"><button type="button" id="segments-btn" class="ghost small">分析潛在受眾 →</button></div></div></div>
 <div id="segments-result"><p class="muted">尚未分析。點擊「分析潛在受眾」，系統會根據目前的痛點清單（已駁回者不計入）反推可能的受眾族群。</p></div>
 </section>
 
+</div>
+</section>
+
+<section class="page" data-page="report" id="page-report">
+<p class="profile-required-hint muted">請先在「產品／服務設定」頁面選擇或建立一組設定。</p>
+<div class="requires-profile">
+
 <section class="panel">
+
 <div class="step-heading"><b>04</b><div><h2>產出洞察報告</h2><p>彙整目前所有痛點的驗證狀態、覆蓋率與風險提示。</p></div></div>
 <button type="button" id="generate-report-btn">產出報告 →</button>
 <div id="report-history" class="muted" style="margin-top:14px"></div>
 </section>
 
 <section id="report-result" hidden></section>
+
+</div>
+</section>
+
+<section class="page" data-page="adcopies" id="page-adcopies">
+<p class="profile-required-hint muted">請先在「產品／服務設定」頁面選擇或建立一組設定。</p>
+<div class="requires-profile">
 
 <section class="panel" id="ad-copies-panel">
 <div class="step-heading"><b>05</b><div><h2>Meta 廣告效益驗證</h2><p>廣告上線後，把真實花費數據回灌進來——同一份文案不管回灌幾次都只標籤化一次，用「有多少人點、花多少錢轉換一次、賺不賺得回廣告費」這些真實數據交叉驗證哪個痛點真的打得動人，而不是靠 AI 猜置信度。</p></div></div>
@@ -248,11 +297,9 @@
 </div>
 </section>
 
-<details class="panel" id="report-library-panel">
-<summary>
-<div><strong>洞察報告資料庫</strong><small>瀏覽這個帳號底下所有產品/服務設定產出過的洞察報告，可依領域、受眾、價格帶篩選</small></div>
-<span>展開</span>
-</summary>
+<section class="page" data-page="library" id="page-library">
+<section class="panel" id="report-library-panel">
+<div class="step-heading"><b>◍</b><div><h2>洞察報告資料庫</h2><p>瀏覽這個帳號底下所有產品/服務設定產出過的洞察報告，可依領域、受眾、價格帶篩選。</p></div></div>
 <div id="report-library-filter-bar" class="filter-bar">
 <select id="report-filter-domain"><option value="">全部產業／領域</option></select>
 <select id="report-filter-audience"><option value="">全部目標受眾</option></select>
@@ -260,13 +307,12 @@
 <button type="button" id="report-filter-reset" class="ghost small">清除篩選</button>
 </div>
 <div id="report-library-list" style="margin-top:14px"><p class="muted">尚無報告。</p></div>
-</details>
+</section>
+</section>
 
-<details class="panel swipe">
-<summary>
-<div><strong>產業文案手法庫</strong><small>貼入真實廣告文案，拆解其框架與情緒手法，作為策略參考基準</small></div>
-<span>展開</span>
-</summary>
+<section class="page" data-page="swipe" id="page-swipe">
+<section class="panel swipe">
+<div class="step-heading"><b>◍</b><div><h2>產業文案手法庫</h2><p>貼入真實廣告文案，拆解其框架與情緒手法，作為策略參考基準。</p></div></div>
 <p class="muted" style="margin-bottom:14px">僅供內部分析與手法學習，用來比對你的受眾洞察是否符合業界常見打法，不會被用來產生你自己的文案。</p>
 <form id="swipe-form">
 <label>範例廣告文字<textarea name="raw_content" required placeholder="貼上欲分析的廣告文案…"></textarea></label>
@@ -304,15 +350,45 @@
 </div>
 <div id="swipe-filter-count" class="muted" style="margin-top:8px"></div>
 <div id="swipe-list" style="margin-top:14px"></div>
-</details>
+</section>
+</section>
 
 </main>
+</div>
+</div>
+
+<!-- 帳號設定：獨立於登入面板之外的功能按鍵，登入後才會顯示在使用者名稱旁邊，
+     點擊後開啟這個小型 modal，讓「登入/註冊」與「修改個人帳號設定」是兩件分開的事。
+     保留在 app-shell 之外、body 的頂層，因為它是覆蓋全畫面的 modal，不屬於任何一個頁面。 -->
+<div id="account-settings-overlay" hidden>
+<div id="account-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="account-settings-title">
+<div class="step-heading"><b>⚙</b><div><h2 id="account-settings-title">帳號設定</h2><p>管理你的顯示名稱與帳號資訊。</p></div></div>
+<p class="muted" id="account-settings-email"></p>
+<label>顯示名稱<input id="account-settings-name-input" type="text" maxlength="30" placeholder="未設定則顯示 Email"></label>
+<div class="auth-actions">
+<button type="button" id="account-settings-save">儲存顯示名稱</button>
+<button type="button" id="account-settings-close" class="ghost">關閉</button>
+</div>
+<hr class="divider">
+<button type="button" id="account-settings-signout" class="danger ghost small">登出</button>
+</div>
+</div>
 
 <template id="feedback-item-tpl">
 <div class="feedback-item">
 <input type="checkbox" class="fb-check">
 <div class="fb-text"><span class="source-tag"></span><div class="fb-body"></div></div>
-<button class="fb-delete" title="刪除" aria-label="刪除">×</button>
+<div class="fb-actions">
+<button type="button" class="fb-edit" title="編輯語料內容" aria-label="編輯">✎</button>
+<button type="button" class="fb-delete" title="刪除" aria-label="刪除">×</button>
+</div>
+<form class="fb-edit-form pc-edit-form" hidden>
+<label>語料內容<textarea class="edit-raw_text" required></textarea></label>
+<div class="pain-actions">
+<button type="submit" class="small">儲存修改</button>
+<button type="button" class="small ghost fb-edit-cancel">取消</button>
+</div>
+</form>
 </div>
 </template>
 
@@ -402,4 +478,5 @@
 <script src="/auth.js"></script>
 <script src="/account-corner.js"></script>
 <script src="/app.js"></script>
+<script src="/nav.js"></script>
 </body></html>
