@@ -430,8 +430,30 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
 // 潛在／隱藏受眾地圖：從目前已通過複核（或至少未被駁回）的痛點出發，
 // 讓 AI 反推「這些痛點分別可能對應到哪些更細分的受眾輪廓」——不寫入資料庫，
 // 每次呼叫都是即時分析，就像 suggest 一樣是可重複產生的草稿性質。
-async function handleSegments(req, res, user, profileId) {
-  if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
+// 潛在受眾地圖：分析結果存進 audience_segments 資料表（比照痛點的做法），
+// 所以拆成四支：
+//   GET    單純讀取目前已存在的族群清單，不呼叫 AI（頁面載入、編輯/刪除後都走這條）
+//   POST   觸發一次新的 AI 分析，新產生的族群併入既有清單（跟既有族群名稱重複的略過不寫入）
+//   PATCH  編輯一筆既有族群（族群名稱／描述／原因／差異化說明）
+//   DELETE 刪除一筆既有族群
+const CONSTRAINT_LABELS = {
+  no_face: '不露臉',
+  no_short_video: '不使用短影音',
+  text_only: '純文字與圖文排版',
+};
+
+async function handleSegmentsList(req, res, user, profileId) {
+  try {
+    const segments = await restRequest(
+      `audience_segments?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=*&order=created_at.asc`
+    );
+    return res.status(200).json({ segments });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+async function handleSegmentsAnalyze(req, res, user, profileId) {
   try {
     const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=*`);
     if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
@@ -439,19 +461,17 @@ async function handleSegments(req, res, user, profileId) {
     const points = await restRequest(
       `audience_pain_points?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&review_status=neq.rejected&select=id,surface_problem,deep_desire`
     );
+    const existingSegments = await restRequest(
+      `audience_segments?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=*&order=created_at.asc`
+    );
     if (!points.length) {
-      return res.status(200).json({ segments: [], message: '尚無可分析的痛點（已駁回的痛點不計入），請先建立或萃取痛點。' });
+      return res.status(200).json({ segments: existingSegments, message: '尚無可分析的痛點（已駁回的痛點不計入），請先建立或萃取痛點。' });
     }
 
-// 呈現媒介限制（business_constraints）目前只在建立產品/服務設定時寫入資料庫，尚未被任何
-// AI 分析流程實際讀取使用；這裡把它接進「潛在受眾地圖」，讓每個反推出來的族群不只是「是誰」，
-// 還能建議「適合賣給他們的數位資產形式」，並且這個建議必須尊重使用者設定的媒介限制
-// （例如不露臉、不用短影音），對應企劃書中「限制條件矩陣」與「產品化建議模組」的精神。
-const CONSTRAINT_LABELS = {
-  no_face: '不露臉',
-  no_short_video: '不使用短影音',
-  text_only: '純文字與圖文排版',
-};
+    // 呈現媒介限制（business_constraints）目前只在建立產品/服務設定時寫入資料庫，尚未被任何
+    // AI 分析流程實際讀取使用；這裡把它接進「潛在受眾地圖」，讓每個反推出來的族群不只是「是誰」，
+    // 還能建議「適合賣給他們的數位資產形式」，並且這個建議必須尊重使用者設定的媒介限制
+    // （例如不露臉、不用短影音），對應企劃書中「限制條件矩陣」與「產品化建議模組」的精神。
     const constraintsLine = Array.isArray(profile.business_constraints) && profile.business_constraints.length
       ? profile.business_constraints.map(c => CONSTRAINT_LABELS[c] || c).join('、')
       : '';
@@ -500,7 +520,7 @@ ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴�
       return audienceNorms.some(an => t === an || t.includes(an) || an.includes(t));
     };
 
-    const segments = rawSegments
+    const candidates = rawSegments
       .filter(s => !isDuplicateOfAudience(s.segment_name) && !isDuplicateOfAudience(s.description))
       .map(s => {
         const indices = Array.isArray(s.matched_indices) ? s.matched_indices.filter(i => points[i]) : [];
@@ -517,10 +537,95 @@ ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴�
         };
       }).filter(s => s.matched_pain_point_ids.length);
 
-    return res.status(200).json({ segments, note: parsed && parsed.note, based_on_count: points.length, constraints_applied: constraintsLine || null });
+    // 跟既有已存下來的族群比對名稱（正規化後），完全相同就視為重複，略過不重複寫入——
+    // 每次按「分析潛在受眾」都是把新一輪分析結果併入既有清單，而不是整批覆蓋掉使用者
+    // 已經看過、可能已經編輯過的族群。
+    const existingNames = new Set(existingSegments.map(s => normalize(s.segment_name)));
+    const toInsert = [];
+    const seenThisBatch = new Set();
+    for (const c of candidates) {
+      const key = normalize(c.segment_name);
+      if (existingNames.has(key) || seenThisBatch.has(key)) continue;
+      seenThisBatch.add(key);
+      toInsert.push(c);
+    }
+
+    let inserted = [];
+    if (toInsert.length) {
+      inserted = await restRequest('audience_segments', {
+        method: 'POST',
+        prefer: 'return=representation',
+        body: toInsert.map(c => ({
+          user_id: user.id,
+          domain_profile_id: profileId,
+          segment_name: c.segment_name,
+          description: c.description,
+          rationale: c.rationale,
+          differentiation: c.differentiation,
+          matched_pain_point_ids: c.matched_pain_point_ids,
+          suggested_formats: c.suggested_formats,
+          status: 'ai_generated',
+        })),
+      });
+    }
+
+    const allSegments = [...existingSegments, ...inserted];
+    return res.status(200).json({
+      segments: allSegments,
+      note: parsed && parsed.note,
+      based_on_count: points.length,
+      constraints_applied: constraintsLine || null,
+      inserted_count: inserted.length,
+      skipped_duplicate_count: candidates.length - toInsert.length,
+    });
   } catch (err) {
     return sendError(res, 500, err.message);
   }
+}
+
+async function handleSegmentsUpdate(req, res, user, profileId) {
+  const { segment_id, segment_name, description, rationale, differentiation } = req.body || {};
+  if (!segment_id) return sendError(res, 400, '缺少 segment_id。');
+  const patch = { status: 'edited', edited_at: new Date().toISOString() };
+  if (segment_name !== undefined) {
+    if (!segment_name) return sendError(res, 400, '族群名稱不能為空。');
+    patch.segment_name = segment_name;
+  }
+  if (description !== undefined) patch.description = description;
+  if (rationale !== undefined) patch.rationale = rationale;
+  if (differentiation !== undefined) patch.differentiation = differentiation;
+  try {
+    const updated = await restRequest(
+      `audience_segments?id=eq.${segment_id}&domain_profile_id=eq.${profileId}&user_id=eq.${user.id}`,
+      { method: 'PATCH', prefer: 'return=representation', body: patch }
+    );
+    if (!updated.length) return sendError(res, 404, '找不到對應的受眾族群。');
+    return res.status(200).json(updated[0]);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+async function handleSegmentsDelete(req, res, user, profileId) {
+  const { segment_id } = req.body || {};
+  if (!segment_id) return sendError(res, 400, '缺少 segment_id。');
+  try {
+    await restRequest(
+      `audience_segments?id=eq.${segment_id}&domain_profile_id=eq.${profileId}&user_id=eq.${user.id}`,
+      { method: 'DELETE' }
+    );
+    return res.status(200).json({ deleted: true });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+async function handleSegments(req, res, user, profileId) {
+  if (req.method === 'GET') return handleSegmentsList(req, res, user, profileId);
+  if (req.method === 'POST') return handleSegmentsAnalyze(req, res, user, profileId);
+  if (req.method === 'PATCH') return handleSegmentsUpdate(req, res, user, profileId);
+  if (req.method === 'DELETE') return handleSegmentsDelete(req, res, user, profileId);
+  return sendError(res, 405, '不支援的方法。');
 }
 
 // 從「產業文案手法庫」已分析過的範例文案中，找出領域相近的文案裡萃取出的受眾痛點，
