@@ -1,5 +1,15 @@
 const { getUserFromRequest, restRequest, sendError } = require('./_lib/supabase');
-const { call, parseJSON } = require('./_lib/provider');
+const { call, callVision, parseJSON } = require('./_lib/provider');
+const { normalizeImage } = require('./_lib/vision');
+
+// 目標受眾改為可複選陣列（domain_profiles.audiences），這裡統一提供一個把陣列組成
+// 一句話的小工具，所有原本直接內插 profile.audience 的 prompt 都改用這個，
+// 避免多處各自寫一次 join 邏輯、又不小心漏了某一處。
+const IMAGE_ANALYZE_AI_BUDGET_MS = Number(process.env.PAIN_IMAGE_AI_BUDGET_MS || 20000);
+function audienceLine(profile) {
+  const list = Array.isArray(profile.audiences) ? profile.audiences : [];
+  return list.length ? list.join('、') : (profile.audience || '（未設定）');
+}
 
 // 這支合併了原本 3 支獨立檔案：
 //   POST /api/domain-profiles/:id/pain-points          (action 未帶)
@@ -186,6 +196,52 @@ async function dispatchDefault(req, res, user, profileId) {
   return sendError(res, 405, '不支援的方法。');
 }
 
+// 圖片辨識輔助手動新增痛點：使用者上傳一張截圖（例如顧客的訊息、留言、評論畫面），
+// AI 直接看圖分析出一組痛點草稿（表層問題／深層渴望／詳細陳述），回傳給前端讓使用者
+// 檢視、修改後再自行按下「手動新增一筆」送出——刻意不在這裡直接寫入資料庫，
+// 原因跟 suggest 一樣：這是「輔助發想」的草稿，不是有真實語料佐證的痛點，
+// 使用者應該先看過、確認符合實際情況再送出，避免 AI 誤判畫面內容也被當成已驗證的痛點。
+async function handleAnalyzeImage(req, res, user, profileId) {
+  if (req.method !== 'POST') return sendError(res, 405, '不支援的方法。');
+  const { image } = req.body || {};
+  if (!image) return sendError(res, 400, '請上傳要分析的圖片。');
+  try {
+    const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=*`);
+    if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
+
+    const img = normalizeImage(image);
+    const system = `你是市場洞察分析師，具備從畫面截圖（例如顧客訊息、社群留言、評論、客服對話）直接判讀受眾痛點的能力。
+只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。`;
+    const prompt = `請分析這張截圖畫面中的內容，判斷畫面裡的人（顧客／潛在受眾）透露出的痛點，並輸出一組：
+- surface_problem：表層問題（一句話，受眾自己意識得到的困擾）
+- deep_desire：背後的深層渴望（一句話）
+- detail：完整陳述（4-6 句，150-250 字），內容至少涵蓋：①這個痛點通常在什麼具體情境或時間點浮現、②背後的成因或誘發因素、
+  ③對受眾造成的實際影響、④這個受眾過去可能嘗試過但沒有真正解決的做法。
+- transcript：畫面上讀得到的原始文字，逐字轉錄（若完全沒有文字，改用 1-2 句客觀描述畫面內容）
+
+背景資訊（僅供判斷語境參考，不要直接抄進輸出內容）：
+領域：${profile.domain_tag}
+目標受眾：${audienceLine(profile)}
+${PLAIN_LANGUAGE_RULE}
+
+若畫面內容完全看不出任何受眾痛點（例如純風景照、純商品規格圖），surface_problem 與 deep_desire 請回傳空字串，
+並在 detail 中說明「這張圖片沒有看出明確的受眾痛點，建議手動填寫或改用其他截圖」。
+
+輸出格式：{"surface_problem":"...","deep_desire":"...","detail":"...","transcript":"..."}`;
+
+    const raw = await callVision({ system, prompt, images: [img], maxTokens: 1200, budgetMs: IMAGE_ANALYZE_AI_BUDGET_MS });
+    const parsed = parseJSON(raw);
+    return res.status(200).json({
+      surface_problem: parsed.surface_problem || '',
+      deep_desire: parsed.deep_desire || '',
+      detail: parsed.detail || '',
+      transcript: parsed.transcript || '',
+    });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 async function handleSuggest(req, res, user, profileId) {
   if (req.method !== 'GET') return sendError(res, 405, '不支援的方法。');
   try {
@@ -194,7 +250,7 @@ async function handleSuggest(req, res, user, profileId) {
 
     const system = '你是市場洞察分析師。只能輸出合法的 JSON 陣列，不要有任何前後說明文字或 Markdown 圍籬。';
     const prompt = `領域：${profile.domain_tag}
-目標受眾：${profile.audience}
+目標受眾：${audienceLine(profile)}
 價格帶：${profile.price_tier === 'low' ? '低單價／快速決策' : '高客單價／建立信任'}
 
 請提出 3 組該受眾常見的痛點草稿，每組包含：
@@ -244,7 +300,7 @@ ${TW_LOCALE_RULE}
 ${PLAIN_LANGUAGE_RULE}`;
 
     const prompt = `【領域】${profile.domain_tag}
-【目標受眾】${profile.audience}
+【目標受眾】${audienceLine(profile)}
 
 以下是 ${feedbacks.length} 筆真實顧客語料（編號從 0 開始）：
 ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
@@ -410,7 +466,7 @@ const CONSTRAINT_LABELS = {
    區分，就不要輸出這個族群。
 2. 每個族群要有清楚的區隔依據（情境、動機、急迫程度、決策角色等），不能只靠年齡或性別區分。
 3. matched_indices 只能填入下方清單中實際存在的編號，不可捏造。
-4. differentiation 欄位要明確寫出「這個族群跟目前設定的目標受眾『${profile.audience}』具體有什麼不同」，
+4. differentiation 欄位要明確寫出「這個族群跟目前設定的目標受眾『${audienceLine(profile)}』具體有什麼不同」，
    不能只寫「更精準」這種空泛描述，要講清楚差在哪個面向。
 5. 若清單裡的痛點明顯無法反映出多元受眾（例如全部指向同一種情境），可以回傳少於 2 個族群，並在對應的 note 欄位說明原因。
 6. suggested_formats：針對這個族群，建議 1-3 種適合的「數位資產形式」（例如：自動化線上課程、SOP／檢核表模板、
@@ -419,14 +475,14 @@ const CONSTRAINT_LABELS = {
 ${PLAIN_LANGUAGE_RULE}`;
 
     const prompt = `【領域】${profile.domain_tag}
-【目前設定的目標受眾（反推出的族群不可與此重複或僅為換句話說）】${profile.audience}
+【目前設定的目標受眾（反推出的族群不可與此重複或僅為換句話說）】${audienceLine(profile)}
 【呈現媒介限制】${constraintsLine || '無特別限制'}
 
 【痛點清單】（編號從 0 開始）
 ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴望：${p.deep_desire}`).join('\n')}
 
 請輸出：
-{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境與典型情境（2-4句，具體描述，不要空泛）","rationale":"為什麼這些痛點特別打中他們（2-3句）","differentiation":"跟目前目標受眾『${profile.audience}』具體差在哪裡（1-2句）","matched_indices":[0,2],"suggested_formats":[{"format":"...","reason":"..."}]}],"note":"若整體區隔度不高，說明原因（選填）"}`;
+{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境與典型情境（2-4句，具體描述，不要空泛）","rationale":"為什麼這些痛點特別打中他們（2-3句）","differentiation":"跟目前目標受眾『${audienceLine(profile)}』具體差在哪裡（1-2句）","matched_indices":[0,2],"suggested_formats":[{"format":"...","reason":"..."}]}],"note":"若整體區隔度不高，說明原因（選填）"}`;
 
     const raw = await call({ system, prompt, maxTokens: 1800, budgetMs: SEGMENTS_AI_BUDGET_MS });
     const parsed = parseJSON(raw);
@@ -436,11 +492,12 @@ ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴�
     // 明顯只是把 audience 原文換句話說（去除空白／標點後幾乎完全相同或互相包含）的族群，
     // 避免「潛在受眾」清單裡出現一個其實就是原本受眾的重複項。
     const normalize = s => (s || '').replace(/[\s、，。！？~～\-()（）「」『』]/g, '').toLowerCase();
-    const audienceNorm = normalize(profile.audience);
+    const audienceNorms = (Array.isArray(profile.audiences) ? profile.audiences : [profile.audience])
+      .map(normalize).filter(Boolean);
     const isDuplicateOfAudience = text => {
       const t = normalize(text);
-      if (!t || !audienceNorm) return false;
-      return t === audienceNorm || t.includes(audienceNorm) || audienceNorm.includes(t);
+      if (!t || !audienceNorms.length) return false;
+      return audienceNorms.some(an => t === an || t.includes(an) || an.includes(t));
     };
 
     const segments = rawSegments
@@ -606,6 +663,7 @@ module.exports = async (req, res) => {
   if (!profileId) return sendError(res, 400, '缺少 domain profile id。');
 
   if (action === 'suggest') return handleSuggest(req, res, user, profileId);
+  if (action === 'analyze-image') return handleAnalyzeImage(req, res, user, profileId);
   if (action === 'extract') return handleExtract(req, res, user, profileId);
   if (action === 'segments') return handleSegments(req, res, user, profileId);
   if (action === 'from-swipe') return handleFromSwipe(req, res, user, profileId);
