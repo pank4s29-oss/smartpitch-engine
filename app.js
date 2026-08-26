@@ -1331,109 +1331,61 @@ if (segmentsBtn) {
   };
 }
 
-// ---------------- 洞察報告（現已併入「潛在受眾地圖」頁面，不再是獨立頁籤） ----------------
-// 產出報告的按鈕與結果區塊實體上位於 #page-segments 裡（見 index.html），這裡的邏輯本身不變，
-// 只是不再對應獨立的側邊欄項目／page-report 區塊。
+// ---------------- 產出報告與匯出（現已併入「潛在受眾地圖」頁面，不再是獨立頁籤） ----------------
+// 報告不再是另外呼叫 AI 產生、存成快照的「洞察報告」（AI 導讀／覆蓋率統計／風險提示／
+// 語料佐證與置信度／廣告成效比對），而是直接把「受眾痛點列表」與「潛在受眾地圖」這兩份
+// 系統本來就有、使用者已經在看的清單，原樣組成一份可離線保存或寄送客戶的報告。
+// 拿掉語料佐證與置信度的理由：顧客／網友在語料裡提到什麼，本來就不等於「這個受眾一定
+// 存在或一定被打動」，用一個百分比置信度包裝反而讓人誤以為是精準量化的證據；真正可信
+// 的驗證方式是「Meta 廣告效益驗證」頁面裡的真實花費／點擊／轉換數據，那部分維持獨立。
+//
+// 因為不再存成快照，也就不需要「報告資料庫」／「歷史報告」——每次打開報告都是即時
+// 讀取當下最新的痛點與受眾族群，跟畫面上其他頁面看到的資料保證一致，不會有版本落後
+// 或對不上的問題。
 
-let currentReportData = null; // { report, meta, id } — 保留最後一次渲染的報告，供排序切換與匯出 Word 重用，不必重打 API
+let currentReportProfileId = null; // 記住目前報告畫面對應哪個產品/服務設定，供匯出 Word 使用
 
-const REVIEW_STATUS_ORDER = { rejected: 0, unreviewed: 1, edited: 2, confirmed: 3 };
-
-function sortReportPainPoints(points, sortKey) {
-  const copy = [...points];
-  switch (sortKey) {
-    case 'confidence_asc':
-      return copy.sort((a, b) => (a.confidence_score ?? -1) - (b.confidence_score ?? -1));
-    case 'status':
-      return copy.sort((a, b) => (REVIEW_STATUS_ORDER[a.review_status] ?? 1) - (REVIEW_STATUS_ORDER[b.review_status] ?? 1));
-    case 'evidence_desc':
-      return copy.sort((a, b) => (b.evidence_count || 0) - (a.evidence_count || 0));
-    case 'ad_ctr_desc':
-      // 沒有真實廣告成效資料的痛點排到最後，而不是被當成 0 排到有資料的前面。
-      return copy.sort((a, b) => {
-        const aCtr = a.ad_performance && a.ad_performance.weighted_ctr != null ? a.ad_performance.weighted_ctr : -1;
-        const bCtr = b.ad_performance && b.ad_performance.weighted_ctr != null ? b.ad_performance.weighted_ctr : -1;
-        return bCtr - aCtr;
-      });
-    case 'confidence_desc':
-    default:
-      return copy.sort((a, b) => (b.confidence_score ?? -1) - (a.confidence_score ?? -1));
-  }
+function reportPainPointCardHtml(p, index) {
+  return `<article class="pain-card">
+    <div class="pain-card-top">
+      <div><h3>痛點 ${index + 1}：${esc(p.surface_problem)}</h3><p class="deep-desire">${esc(p.deep_desire)}</p></div>
+    </div>
+    ${p.detail ? `<p class="pain-detail">${esc(p.detail)}</p>` : ''}
+  </article>`;
 }
 
-function renderReportBreakdown(container, points, sortKey) {
-  container.innerHTML = '';
-  if (!points.length) {
-    container.innerHTML = '<p class="muted">此產品/服務設定尚無痛點資料。</p>';
-    return;
-  }
-  sortReportPainPoints(points, sortKey).forEach(p => {
-    const node = $('#report-row-tpl').content.cloneNode(true);
-    node.querySelector('.rr-surface').textContent = p.surface_problem;
-    node.querySelector('.rr-desire').textContent = p.deep_desire;
-    if (p.detail) {
-      const detailEl = document.createElement('p');
-      detailEl.className = 'pain-detail';
-      node.querySelector('.rr-desire').after(detailEl);
-      detailEl.textContent = p.detail;
-    }
-
-    const stamp = node.querySelector('.rr-stamp');
-    const st = p.review_status || 'unreviewed';
-    stamp.className = 'stamp rr-stamp ' + st;
-    stamp.textContent = STAMP_LABEL[st] || st;
-
-    const pct = p.confidence_score != null ? Math.round(p.confidence_score * 100) : 0;
-    node.querySelector('.rr-bar').style.width = pct + '%';
-
-    node.querySelector('.rr-source').textContent = SOURCE_LABEL[p.source] || p.source || '—';
-    node.querySelector('.rr-evidence').innerHTML = `佐證 <span class="num">${p.evidence_count || 0}</span> 則語料`;
-    node.querySelector('.rr-confidence').innerHTML = p.confidence_score != null
-      ? `置信度 <span class="num">${pct}%</span>`
-      : '置信度 <span class="num">—</span>';
-
-    const solEl = node.querySelector('.rr-solution');
-    if (p.solution) {
-      const fit = p.solution.fit_score != null ? `｜適配度 <span class="num">${Math.round(p.solution.fit_score * 100)}%</span>` : '';
-      solEl.innerHTML = `<div class="framework-box"><b>${esc(p.solution.product_name)}</b> — ${esc(p.solution.core_selling_point)}${fit}</div>`;
-    } else {
-      solEl.innerHTML = '<span class="no-solution">尚未配對解決方案</span>';
-    }
-
-    // 真實廣告成效：跟 Meta 廣告後台不一樣的地方就在這裡——這一列數據不是某支廣告
-    // 單獨的表現，而是「這個受眾痛點」本身，用真實花費數據換算出來的成效。metricSpan
-    // 跟廣告文案卡片／效益驗證矩陣共用同一份白話定義，同一個指標到處看起來都一樣。
-    const adPerfEl = node.querySelector('.rr-ad-performance');
-    if (adPerfEl) {
-      const ad = p.ad_performance;
-      if (ad) {
-        adPerfEl.innerHTML = `<div class="pain-meta ad-performance-meta">
-          <span class="label-chip" style="cursor:default">真實廣告成效已驗證</span>
-          ${metricSpan('ctr', pctLabel(ad.weighted_ctr))}
-          ${metricSpan('cpa', ad.weighted_cpa ?? '—')}
-          ${metricSpan('cvr', pctLabel(ad.weighted_cvr))}
-          ${ad.weighted_roas != null ? metricSpan('roas', ad.weighted_roas) : ''}
-          <span title="依 ${ad.sample_size} 則已回灌成效的廣告文案換算${ad.low_confidence ? '，樣本數過少僅供初步參考' : ''}">樣本 <span class="num">${ad.sample_size}</span> 則廣告</span>
-        </div>`;
-      } else {
-        adPerfEl.innerHTML = '<p class="muted" style="margin-top:8px">尚無對應的真實廣告成效數據，目前僅有語料佐證。</p>';
-      }
-    }
-
-    container.append(node);
-  });
+function reportSegmentCardHtml(seg, index, painMap) {
+  const matchedIds = Array.isArray(seg.matched_pain_point_ids) ? seg.matched_pain_point_ids : [];
+  const chips = matchedIds.map(id => {
+    const p = painMap.get(id);
+    return p ? `<span class="label-chip" style="cursor:default">${esc(p.surface_problem)}</span>` : '';
+  }).join('');
+  const formats = Array.isArray(seg.suggested_formats) ? seg.suggested_formats : [];
+  return `<article class="pain-card">
+    <div class="pain-card-top">
+      <div><h3>受眾 ${index + 1}：${esc(seg.segment_name)}</h3><p class="deep-desire">${esc(seg.description || '')}</p></div>
+    </div>
+    ${seg.rationale ? `<div class="pain-quote">${esc(seg.rationale)}</div>` : ''}
+    ${seg.differentiation ? `<div class="segment-differentiation"><b>與目標受眾的差異：</b>${esc(seg.differentiation)}</div>` : ''}
+    ${formats.length ? `
+    <div class="pain-meta" style="margin-top:12px">適合賣給這個族群的數位資產形式：</div>
+    <div class="framework-box" style="margin-top:8px">${formats.map(f =>
+      `<div style="margin-bottom:6px"><b>${esc(f.format)}</b>${f.reason ? ' — ' + esc(f.reason) : ''}</div>`
+    ).join('')}</div>` : ''}
+    ${chips ? `<div class="pain-meta" style="margin-top:12px">對應的痛點：</div><div class="label-chips" style="margin-top:8px">${chips}</div>` : ''}
+  </article>`;
 }
 
-// 匯出結果：把目前渲染中的報告下載成 Word 文件。跟一般 api() 不同，這裡預期的回應是
-// 二進位檔案而不是 JSON，所以另外寫一個小工具函式處理，不硬塞進共用的 api()。
-async function downloadReportDocx(reportId, btn) {
-  if (!reportId) { setStatus('⚠ 找不到這份報告的 id，請重新產出或重新開啟報告後再試一次。', true); return; }
+// 匯出結果：把目前這組產品/服務設定的痛點與潛在受眾下載成 Word 文件。跟一般 api() 不同，
+// 這裡預期的回應是二進位檔案而不是 JSON，所以另外寫一個小工具函式處理，不硬塞進共用的 api()。
+async function downloadReportDocx(profileId, btn) {
+  if (!profileId) { setStatus('⚠ 請先選擇一組產品/服務設定。', true); return; }
   const originalText = btn ? btn.textContent : null;
   if (btn) { btn.disabled = true; btn.textContent = '匯出中…'; }
   try {
     const token = await window.getAccessToken();
     if (!token) throw new Error('請先登入後再操作。');
-    const r = await fetch(`/api/insight-reports/${reportId}?format=docx`, {
+    const r = await fetch(`/api/insight-reports?profile_id=${encodeURIComponent(profileId)}&format=docx`, {
       headers: { Authorization: 'Bearer ' + token },
     });
     if (!r.ok) {
@@ -1445,7 +1397,7 @@ async function downloadReportDocx(reportId, btn) {
     const blob = await r.blob();
     const disposition = r.headers.get('Content-Disposition') || '';
     const match = /filename="?([^";]+)"?/.exec(disposition);
-    const filename = match ? decodeURIComponent(match[1]) : `洞察報告_${reportId}.docx`;
+    const filename = match ? decodeURIComponent(match[1]) : `受眾報告_${profileId}.docx`;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -1462,247 +1414,63 @@ async function downloadReportDocx(reportId, btn) {
   }
 }
 
-function renderReport(report, meta, reportId) {
-  currentReportData = { report, meta, id: reportId };
+function renderReport(data) {
+  currentReportProfileId = currentProfileId;
   const container = $('#report-result');
-  container.innerHTML = '';
-  const node = $('#report-tpl').content.cloneNode(true);
+  if (!container) return;
 
-  const dp = report.domain_profile || {};
-  node.querySelector('.r-meta').textContent = (meta || '剛剛產出') + (dp.business_constraints ? `｜呈現媒介限制：${dp.business_constraints}` : '');
+  const dp = data.domain_profile || {};
+  const points = Array.isArray(data.pain_points) ? data.pain_points : [];
+  const segments = Array.isArray(data.segments) ? data.segments : [];
+  const painMap = new Map(points.map(p => [p.id, p]));
 
-  const narrativeEl = node.querySelector('.r-narrative');
-  if (report.narrative) {
-    narrativeEl.textContent = report.narrative;
-  } else {
-    narrativeEl.className += ' unavailable';
-    narrativeEl.textContent = 'AI 導讀暫時無法產生，以下數據統計仍完整可用。';
-  }
-  const editedTag = node.querySelector('.r-narrative-edited-tag');
-  if (editedTag) editedTag.hidden = !report.narrative_edited;
-  const narrativeRow = node.querySelector('.narrative-row');
+  const solutionHtml = data.solution
+    ? `<div class="framework-box"><b>${esc(data.solution.product_name)}</b>${data.solution.core_selling_point ? ' — ' + esc(data.solution.core_selling_point) : ''}</div>`
+    : '<p class="muted">尚未在「產品／服務設定」中填寫解決方案。</p>';
 
-  const c = report.coverage;
-  const stats = [
-    ['痛點總數', c.total_pain_points, false],
-    ['有語料佐證', c.with_evidence, false],
-    ['已人工確認', c.confirmed, false],
-    ['尚未複核', c.unreviewed, c.unreviewed > 0],
-    ['已駁回', c.rejected, false],
-    ['已配對解決方案', c.with_matched_solution, false],
-    ['平均置信度', c.avg_confidence_score != null ? Math.round(c.avg_confidence_score * 100) + '%' : '—', false],
-    ['已有真實廣告成效驗證', c.with_ad_performance ?? 0, false],
-  ];
-
-  const statGrid = node.querySelector('.r-stats');
-  stats.forEach(([label, value, warn]) => {
-    const cell = document.createElement('div');
-    cell.className = 'stat-cell';
-    cell.innerHTML = `<div class="stat-label">${label}</div><div class="stat-value num${warn ? ' warn' : ''}">${value}</div>`;
-    statGrid.append(cell);
-  });
-
-  const risksEl = node.querySelector('.r-risks');
-  if (report.risk_flags && report.risk_flags.length) {
-    report.risk_flags.forEach(f => {
-      const el = document.createElement('div');
-      el.className = 'risk-flag';
-      el.textContent = f;
-      risksEl.append(el);
-    });
-  }
-
-  // 廣告成效亮點：這是跟 Meta 後台拉開差異的地方——不只顯示語料佐證程度，
-  // 直接把「真實廣告成效驗證過的痛點」標出來，跟風險提示分開放，避免混成一長串警示。
-  const adHighlightsEl = node.querySelector('.r-ad-highlights');
-  if (adHighlightsEl && report.ad_performance_highlights && report.ad_performance_highlights.length) {
-    report.ad_performance_highlights.forEach(h => {
-      const el = document.createElement('div');
-      el.className = 'risk-flag ad-highlight';
-      el.textContent = h;
-      adHighlightsEl.append(el);
-    });
-  }
-
-  const fw = report.framework_recommendation;
-  node.querySelector('.r-framework').innerHTML = fw
-    ? `初步框架建議：<b>${esc(fw.name)}</b> — ${esc(fw.reason)}`
-    : '';
-
-  const sortSelect = node.querySelector('.r-sort');
-  const sortLabel = node.querySelector('.r-sort-label');
-  const breakdownEl = node.querySelector('.r-breakdown');
-  const toggleBtn = node.querySelector('.r-toggle-breakdown');
-  const points = Array.isArray(report.pain_points) ? report.pain_points : [];
-  renderReportBreakdown(breakdownEl, points, sortSelect.value);
-  sortSelect.addEventListener('change', () => renderReportBreakdown(breakdownEl, points, sortSelect.value));
-
-  // 逐項分析預設收合：報告一開始只顯示摘要統計／導讀／風險提示，避免每次查看報告
-  // 都直接把整個頁面撐得很長，需要的人再點一次展開完整的痛點清單。
-  breakdownEl.hidden = true;
-  sortLabel.hidden = true;
-  toggleBtn.textContent = '顯示逐項分析 →';
-  toggleBtn.onclick = () => {
-    const willShow = breakdownEl.hidden;
-    breakdownEl.hidden = !willShow;
-    sortLabel.hidden = !willShow;
-    toggleBtn.textContent = willShow ? '收合逐項分析 ←' : '顯示逐項分析 →';
-  };
-
-  // 列印／匯出 PDF：實際上是瀏覽器原生的「列印」功能，使用者用瀏覽器的列印對話框
-  // 選「另存為 PDF」。「受眾痛點逐項分析」預設是收合的（見上方 breakdownEl.hidden），
-  // 如果使用者沒有先手動點開就直接列印，整段最重要的逐項內容會因為 hidden 屬性
-  // 而完全不會出現在 PDF 裡——這正是「PDF 匯出不出來內容」的成因。這裡在呼叫
-  // window.print() 之前先自動展開，列印結束後再還原成使用者原本看到的收合／展開
-  // 狀態，不影響列印後繼續在畫面上操作報告的體驗。
-  node.querySelector('.r-print').onclick = () => {
-    const wasHidden = breakdownEl.hidden;
-    if (wasHidden) {
-      breakdownEl.hidden = false;
-      sortLabel.hidden = false;
-      toggleBtn.textContent = '收合逐項分析 ←';
-    }
-    const restore = () => {
-      if (wasHidden) {
-        breakdownEl.hidden = true;
-        sortLabel.hidden = true;
-        toggleBtn.textContent = '顯示逐項分析 →';
-      }
-      window.removeEventListener('afterprint', restore);
-    };
-    window.addEventListener('afterprint', restore);
-    // 部分瀏覽器（尤其某些行動裝置瀏覽器）不會確實觸發 afterprint，保底用 timeout 還原，
-    // 避免使用者列印完之後發現報告一直卡在展開狀態。
-    setTimeout(restore, 2000);
-    window.print();
-  };
-  node.querySelector('.r-export-docx').onclick = e => downloadReportDocx(currentReportData.id, e.currentTarget);
-  node.querySelector('.r-delete-report').onclick = e => deleteCurrentReport(currentReportData.id, e.currentTarget, container);
-  node.querySelector('.r-edit-narrative').onclick = () => startEditNarrative(narrativeRow, currentReportData);
-
-  container.append(node);
+  container.innerHTML = `<div class="panel report-panel">
+    <div class="step-heading">
+      <b>&#9679;</b>
+      <div><h2>報告</h2>${dp.business_constraints_label ? `<p class="muted">呈現媒介限制：${esc(dp.business_constraints_label)}</p>` : ''}</div>
+      <div class="step-actions">
+        <button type="button" class="ghost small report-export-docx">匯出 Word 文件 →</button>
+        <button type="button" class="ghost small report-print">列印／匯出 PDF</button>
+      </div>
+    </div>
+    <h3>產品／解決方案</h3>
+    ${solutionHtml}
+    <hr class="divider">
+    <h3>受眾痛點列表（共 ${points.length} 筆）</h3>
+    ${points.length ? points.map(reportPainPointCardHtml).join('') : '<p class="muted">此產品/服務設定尚無痛點資料。</p>'}
+    <hr class="divider">
+    <h3>潛在受眾地圖（共 ${segments.length} 個族群）</h3>
+    ${segments.length ? segments.map((s, i) => reportSegmentCardHtml(s, i, painMap)).join('') : '<p class="muted">此產品/服務設定尚無潛在受眾分析結果。</p>'}
+  </div>`;
   container.hidden = false;
+
+  container.querySelector('.report-print').onclick = () => window.print();
+  container.querySelector('.report-export-docx').onclick = e => downloadReportDocx(currentReportProfileId, e.currentTarget);
+
   container.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-// 刪除目前正在檢視的這份報告。跟報告資料庫（洞察報告資料庫頁面）裡的刪除是同一支
-// API，這裡另外提供入口是因為使用者常常是「剛產出／剛打開報告」才發現這份不需要，
-// 不需要特地切到資料庫頁面才能刪除。
-async function deleteCurrentReport(reportId, btn, container) {
-  if (!reportId) { setStatus('⚠ 找不到這份報告的 id，請重新產出或重新開啟報告後再試一次。', true); return; }
-  if (!confirm('確定要刪除這份報告嗎？此操作無法復原。')) return;
-  btn.disabled = true;
-  try {
-    await api(`/api/insight-reports/${reportId}`, { method: 'DELETE' });
-    container.innerHTML = '';
-    container.hidden = true;
-    currentReportData = null;
-    setStatus('已刪除報告。');
-    if (typeof loadReportHistory === 'function' && currentProfileId) await loadReportHistory();
-    if (typeof reportLibraryCache !== 'undefined') {
-      reportLibraryCache = reportLibraryCache.filter(r => r.id !== reportId);
-      if (typeof renderReportLibrary === 'function') renderReportLibrary();
-    }
-  } catch (err) {
-    setStatus('⚠ ' + err.message, true);
-    btn.disabled = false;
-  }
-}
-
-// 編輯導讀：報告裡唯一開放編輯的欄位就是這段 AI 導讀文字——其餘統計數字／逐項痛點
-// 都是程式碼依實際資料算出來的，開放任意竄改會讓報告失去「可信」這個核心價值。
-// 常見情境是要把導讀語氣調整一下再匯出給客戶，或是 AI 導讀當次生成失敗、想手動補一段。
-const NARRATIVE_MAX_LENGTH = 500;
-
-function startEditNarrative(narrativeRow, reportData) {
-  if (!narrativeRow || !reportData) return;
-  const narrativeEl = narrativeRow.querySelector('.r-narrative');
-  const editBtn = narrativeRow.querySelector('.r-edit-narrative');
-
-  const box = document.createElement('div');
-  box.className = 'narrative-edit-box';
-  box.innerHTML = `
-    <textarea maxlength="${NARRATIVE_MAX_LENGTH}">${esc(reportData.report.narrative || '')}</textarea>
-    <div class="char-count">0 / ${NARRATIVE_MAX_LENGTH}</div>
-    <div class="step-actions">
-      <button type="button" class="small ne-save">儲存</button>
-      <button type="button" class="small ghost ne-cancel">取消</button>
-    </div>`;
-  narrativeEl.hidden = true;
-  editBtn.hidden = true;
-  narrativeRow.after(box);
-
-  const textarea = box.querySelector('textarea');
-  const countEl = box.querySelector('.char-count');
-  const updateCount = () => {
-    const len = textarea.value.length;
-    countEl.textContent = `${len} / ${NARRATIVE_MAX_LENGTH}`;
-    countEl.classList.toggle('warn', len > NARRATIVE_MAX_LENGTH);
-  };
-  textarea.addEventListener('input', updateCount);
-  updateCount();
-  textarea.focus();
-
-  const cleanup = () => {
-    box.remove();
-    narrativeEl.hidden = false;
-    editBtn.hidden = false;
-  };
-  box.querySelector('.ne-cancel').onclick = cleanup;
-  box.querySelector('.ne-save').onclick = async () => {
-    const value = textarea.value.trim();
-    if (value.length > NARRATIVE_MAX_LENGTH) {
-      setStatus(`⚠ 導讀內容過長，請控制在 ${NARRATIVE_MAX_LENGTH} 字以內。`, true);
-      return;
-    }
-    const saveBtn = box.querySelector('.ne-save');
-    saveBtn.disabled = true;
-    saveBtn.textContent = '儲存中…';
-    try {
-      const result = await api(`/api/insight-reports/${reportData.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ narrative: value }),
-      });
-      renderReport(result.report, reportData.meta, result.id);
-      setStatus('已更新導讀內容。');
-    } catch (err) {
-      setStatus('⚠ ' + err.message, true);
-      saveBtn.disabled = false;
-      saveBtn.textContent = '儲存';
-    }
-  };
+async function generateReport(profileId) {
+  const data = await api(`/api/insight-reports?profile_id=${encodeURIComponent(profileId)}`);
+  renderReport(data);
+  return data;
 }
 
 $('#generate-report-btn').onclick = async () => {
   if (!currentProfileId) return;
   const btn = $('#generate-report-btn');
   btn.disabled = true;
-  setStatus('正在彙整痛點驗證狀態並產出報告…');
+  setStatus('正在彙整目前的痛點與潛在受眾清單…');
   try {
-    const result = await api('/api/insight-reports', { method: 'POST', body: JSON.stringify({ profile_id: currentProfileId }) });
-    renderReport(result.report, '剛剛產出', result.id);
+    await generateReport(currentProfileId);
     setStatus('報告已產出。');
-    await loadReportHistory();
   } catch (err) { setStatus('⚠ ' + err.message, true); }
   finally { btn.disabled = false; }
 };
-
-async function loadReportHistory() {
-  try {
-    const items = await api(`/api/insight-reports?domain_profile_id=${currentProfileId}`);
-    const el = $('#report-history');
-    if (!items.length) { el.innerHTML = '尚無歷史報告。'; return; }
-    el.innerHTML = '歷史報告：' + items.map(r =>
-      `<button class="ghost small" data-id="${r.id}" style="margin:4px 6px 0 0">${new Date(r.created_at).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</button>`
-    ).join('');
-    el.querySelectorAll('button').forEach(b => b.onclick = async () => {
-      try {
-        const result = await api(`/api/insight-reports/${b.dataset.id}`);
-        renderReport(result.report, '歷史報告', result.id);
-      } catch (err) { setStatus('⚠ ' + err.message, true); }
-    });
-  } catch (e) { /* 靜默失敗，不影響主流程 */ }
-}
 
 // ---------------- 產業文案手法庫（維持原有功能，僅重新定位敘述） ----------------
 
