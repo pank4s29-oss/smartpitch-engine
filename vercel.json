@@ -19,6 +19,7 @@
     { "source": "/api/raw-feedback/:id", "destination": "/api/raw-feedback-hub?id=:id" },
     { "source": "/api/raw-feedback", "destination": "/api/raw-feedback-hub" },
 
+    { "source": "/api/workflow-status", "destination": "/api/ad-copies-hub?action=workflow-status" },
     { "source": "/api/ad-copies/batch-import", "destination": "/api/ad-copies-hub?action=batch-import" },
     { "source": "/api/ad-copies/meta-sync", "destination": "/api/ad-copies-hub?action=meta-sync" },
     { "source": "/api/ad-copies/matrix", "destination": "/api/ad-copies-hub?action=matrix" },
@@ -43,9 +44,6 @@
       "maxDuration": 30
     },
     "api/ad-performance-history-hub.js": {
-      "maxDuration": 30
-    },
-    "api/workflow-status.js": {
       "maxDuration": 30
     },
     "api/raw-feedback-hub.js": {
