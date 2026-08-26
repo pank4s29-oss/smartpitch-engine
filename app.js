@@ -2225,7 +2225,7 @@ function selectProfileAndGoTo(id, page) {
 }
 
 async function dashboardProfileStats(profile) {
-  const stats = { profile, painTotal: 0, painConfirmed: 0, adCopyCount: 0, reportCount: 0, lastReportAt: null };
+  const stats = { profile, painTotal: 0, painConfirmed: 0, adCopyCount: 0 };
   try {
     const points = await api(`/api/domain-profiles/${profile.id}/pain-points`);
     stats.painTotal = points.length;
@@ -2235,21 +2235,12 @@ async function dashboardProfileStats(profile) {
     const ads = await api(`/api/ad-copies?domain_profile_id=${profile.id}`);
     stats.adCopyCount = ads.length;
   } catch (e) { /* 同上，不擋整頁 */ }
-  const reports = reportLibraryCache.filter(r => r.domain_profile_id === profile.id);
-  stats.reportCount = reports.length;
-  if (reports.length) {
-    stats.lastReportAt = reports.reduce((latest, r) => (!latest || r.created_at > latest ? r.created_at : latest), null);
-    stats.latestReportId = reports.find(r => r.created_at === stats.lastReportAt).id;
-  }
   return stats;
 }
 
 function dashboardProfileCardHtml(s) {
   const p = s.profile;
   const confirmRatio = s.painTotal ? `${s.painConfirmed}／${s.painTotal}` : '0';
-  const lastReport = s.lastReportAt
-    ? new Date(s.lastReportAt).toLocaleDateString('zh-TW')
-    : '尚未產出';
   return `<article class="dashboard-card" data-id="${esc(p.id)}">
     <div class="dashboard-card-head">
       <div>
@@ -2259,13 +2250,12 @@ function dashboardProfileCardHtml(s) {
     </div>
     <div class="dashboard-card-stats">
       <div class="dashboard-stat"><span class="num">${confirmRatio}</span><small>痛點（已確認／總數）</small></div>
-      <div class="dashboard-stat"><span class="num">${s.reportCount}</span><small>已產出報告</small></div>
       <div class="dashboard-stat"><span class="num">${s.adCopyCount}</span><small>追蹤中廣告文案</small></div>
     </div>
-    <p class="muted dashboard-card-updated">最近一次報告：${lastReport}</p>
+    <p class="muted dashboard-card-updated">報告會依目前痛點與潛在受眾地圖即時整理。</p>
     <div class="pain-actions">
       <button type="button" class="small secondary dc-feedback">語料與痛點 →</button>
-      <button type="button" class="small ghost dc-report" ${s.reportCount ? '' : 'disabled'}>查看最新報告</button>
+      <button type="button" class="small ghost dc-report">產出分析報告</button>
       <button type="button" class="small ghost dc-edit">編輯設定</button>
     </div>
   </article>`;
@@ -2291,12 +2281,10 @@ async function renderDashboard() {
 
   const totalPain = allStats.reduce((sum, s) => sum + s.painTotal, 0);
   const totalConfirmed = allStats.reduce((sum, s) => sum + s.painConfirmed, 0);
-  const totalReports = allStats.reduce((sum, s) => sum + s.reportCount, 0);
   const totalAdCopies = allStats.reduce((sum, s) => sum + s.adCopyCount, 0);
   statsEl.innerHTML = `
     <div class="dashboard-stat-card"><span class="num">${profilesCache.length}</span><small>產品／服務設定</small></div>
     <div class="dashboard-stat-card"><span class="num">${totalConfirmed}／${totalPain}</span><small>累積痛點（已確認／總數）</small></div>
-    <div class="dashboard-stat-card"><span class="num">${totalReports}</span><small>累積產出報告</small></div>
     <div class="dashboard-stat-card"><span class="num">${totalAdCopies}</span><small>追蹤中廣告文案</small></div>
   `;
 
@@ -2311,14 +2299,10 @@ async function renderDashboard() {
       if (profile) setProfileFormMode('edit', profile);
     };
     const reportBtn = card.querySelector('.dc-report');
-    if (s && s.reportCount) {
-      reportBtn.onclick = async () => {
-        try {
-          const result = await api(`/api/insight-reports/${s.latestReportId}`);
-          renderReport(result.report, '總覽頁快速查看', result.id);
-          if (window.goToPage) window.goToPage('segments');
-          setTimeout(() => { const el = $('#report-result'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
-        } catch (err) { setStatus('⚠ ' + err.message, true); }
+    if (reportBtn) {
+      reportBtn.onclick = () => {
+        selectProfileAndGoTo(id, 'segments');
+        setTimeout(() => { const generateBtn = $('#generate-report-btn'); if (generateBtn) generateBtn.click(); }, 80);
       };
     }
   });
@@ -2337,10 +2321,6 @@ async function init() {
   await loadProductSolutions();
   loadSwipes();
   loadAdPlacements();
-  // 報告資料庫原本用 <details> 展開時才 lazy load；改成側邊欄的獨立頁面之後沒有「展開」
-  // 這個時機點了，直接在啟動時載入一次即可（報告數量對一般使用量來說不會大到需要真的延遲載入）。
-  // renderDashboard() 需要 reportLibraryCache 已經載入好才能算出每組設定的報告數量，所以要 await。
-  await loadReportLibrary();
   renderDashboard();
 }
 if (window.authReady) window.authReady.then(init); else init();
