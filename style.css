@@ -367,6 +367,17 @@ details.csv-import[open] summary { margin-bottom: 4px; }
 }
 .narrative.unavailable { font-family: var(--font-body); font-size: 13px; color: var(--ink-soft); font-style: italic; border-color: var(--line-strong); }
 
+/* ---------- 導讀編輯 ---------- */
+.narrative-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.narrative-row .narrative { flex: 1; }
+.narrative-edited-tag { font-size: 11px; color: var(--ink-soft); font-style: italic; margin: -10px 0 12px; }
+.narrative-edit-box textarea {
+  width: 100%; min-height: 110px; font-family: var(--font-display); font-size: 14.5px;
+  line-height: 1.6; padding: 10px 12px; margin: 10px 0 6px; border: 1px solid var(--line-strong); border-radius: var(--radius);
+}
+.narrative-edit-box .char-count { font-size: 11.5px; color: var(--ink-soft); margin-bottom: 8px; }
+.narrative-edit-box .char-count.warn { color: var(--rejected); }
+
 .framework-box {
   background: var(--evidence-bg); border: 1px solid var(--evidence);
   border-radius: var(--radius); padding: 12px 14px; font-size: 13.5px; color: var(--teal-dark); margin: 14px 0;
@@ -427,12 +438,20 @@ details.panel[open] summary { margin-bottom: 16px; }
 .sort-label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin: 0; white-space: nowrap; }
 .sort-label select { margin: 0; width: auto; padding: 6px 9px; font-size: 12.5px; }
 
+/* 每一筆痛點用左側粗色條 + 編號當作明顯的視覺區隔，畫面捲動很長一串時，使用者
+   一眼就能看出「這裡開始是新的一筆」，不用靠段落間距這種很容易被忽略的弱訊號。
+   counter 在 .r-breakdown 容器上重置，切換排序重新 render 時編號一樣會照畫面
+   當下的順序重新算過，不會對不上。 */
+.r-breakdown { counter-reset: painpoint; }
 .report-row {
-  border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 14px 16px; margin-bottom: 10px; background: #fff;
+  counter-increment: painpoint;
+  border: 1px solid var(--line); border-left: 4px solid var(--teal); border-radius: var(--radius);
+  padding: 14px 16px 14px 14px; margin-bottom: 14px; background: #fff;
+  position: relative;
 }
 .report-row-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
 .report-row h4 { font-family: var(--font-display); font-size: 15px; font-weight: 600; }
+.report-row h4::before { content: '痛點 ' counter(painpoint) '　'; color: var(--teal-dark); font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
 .report-row .deep-desire { font-size: 13px; margin-top: 3px; }
 
 .confidence-bar { height: 5px; background: var(--paper); border-radius: 3px; overflow: hidden; margin: 8px 0; }
@@ -497,6 +516,32 @@ details.panel[open] summary { margin-bottom: 16px; }
   .report-panel { box-shadow: none; border: none; padding: 0; }
   body { background: #fff; }
   .page-container, main { max-width: 100%; padding: 0; }
+
+  /* 「受眾痛點逐項分析」預設在畫面上是收合的（.r-breakdown[hidden]），這是這份
+     報告的主要內容。過去列印／匯出 PDF 時完全沒有處理這件事：如果使用者在按下
+     「列印／匯出 PDF」之前沒有先手動點開「顯示逐項分析」，瀏覽器的原生 hidden
+     屬性會讓整段逐項分析在列印結果裡完全消失，PDF 只剩摘要統計、看起來像是
+     「內容匯出不出來」。app.js 的 r-print 按鈕現在會在呼叫 window.print() 之前
+     自動展開這個區塊，這裡再加一道 CSS 保底：就算展開失敗或有其他呼叫路徑，
+     列印時一律強制顯示，不依賴 JS 有沒有先執行。 */
+  .r-breakdown, .r-breakdown[hidden] { display: block !important; }
+
+  /* 每一筆痛點卡片不要被硬生生從中間切到下一頁，讀者不用為了看完同一筆痛點的
+     資訊而在紙本／PDF 頁面之間來回翻找。 */
+  .report-row { break-inside: avoid; page-break-inside: avoid; }
+
+  /* 逐項分析另起一段列印區塊，跟前面的摘要統計／導讀視覺上分開，避免整份報告
+     擠成密密麻麻的一長條。 */
+  .report-detail-head { break-before: page; page-break-before: always; }
+
+  /* 統計數字方塊、風險提示、成效亮點都是靠背景色跟文字顏色搭配區分類型，瀏覽器
+     預設「省墨模式」會把背景色整個拿掉，導致這些區塊看起來像沒有樣式的一般文字、
+     甚至跟白色背景混在一起難以辨識。強制保留背景色，PDF 看起來才會跟畫面上一致。 */
+  .report-panel, .stat-cell, .risk-flag, .framework-box, .stamp, .report-row {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    color-adjust: exact;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
