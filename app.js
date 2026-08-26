@@ -1331,9 +1331,11 @@ if (segmentsBtn) {
   };
 }
 
-// ---------------- 洞察報告 ----------------
+// ---------------- 洞察報告（現已併入「潛在受眾地圖」頁面，不再是獨立頁籤） ----------------
+// 產出報告的按鈕與結果區塊實體上位於 #page-segments 裡（見 index.html），這裡的邏輯本身不變，
+// 只是不再對應獨立的側邊欄項目／page-report 區塊。
 
-let currentReportData = null; // { report, meta } — 保留最後一次渲染的報告，供排序切換時重用不必重打 API
+let currentReportData = null; // { report, meta, id } — 保留最後一次渲染的報告，供排序切換與匯出 Word 重用，不必重打 API
 
 const REVIEW_STATUS_ORDER = { rejected: 0, unreviewed: 1, edited: 2, confirmed: 3 };
 
@@ -1422,8 +1424,46 @@ function renderReportBreakdown(container, points, sortKey) {
   });
 }
 
-function renderReport(report, meta) {
-  currentReportData = { report, meta };
+// 匯出結果：把目前渲染中的報告下載成 Word 文件。跟一般 api() 不同，這裡預期的回應是
+// 二進位檔案而不是 JSON，所以另外寫一個小工具函式處理，不硬塞進共用的 api()。
+async function downloadReportDocx(reportId, btn) {
+  if (!reportId) { setStatus('⚠ 找不到這份報告的 id，請重新產出或重新開啟報告後再試一次。', true); return; }
+  const originalText = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = '匯出中…'; }
+  try {
+    const token = await window.getAccessToken();
+    if (!token) throw new Error('請先登入後再操作。');
+    const r = await fetch(`/api/insight-reports/${reportId}?format=docx`, {
+      headers: { Authorization: 'Bearer ' + token },
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      let msg = '匯出失敗';
+      try { msg = JSON.parse(text).error || msg; } catch (e) { /* 非 JSON 錯誤內容，維持預設訊息 */ }
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const disposition = r.headers.get('Content-Disposition') || '';
+    const match = /filename="?([^";]+)"?/.exec(disposition);
+    const filename = match ? decodeURIComponent(match[1]) : `洞察報告_${reportId}.docx`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus('已下載 Word 文件。');
+  } catch (err) {
+    setStatus('⚠ ' + err.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
+  }
+}
+
+function renderReport(report, meta, reportId) {
+  currentReportData = { report, meta, id: reportId };
   const container = $('#report-result');
   container.innerHTML = '';
   const node = $('#report-tpl').content.cloneNode(true);
@@ -1507,6 +1547,7 @@ function renderReport(report, meta) {
   };
 
   node.querySelector('.r-print').onclick = () => window.print();
+  node.querySelector('.r-export-docx').onclick = e => downloadReportDocx(currentReportData.id, e.currentTarget);
 
   container.append(node);
   container.hidden = false;
@@ -1520,7 +1561,7 @@ $('#generate-report-btn').onclick = async () => {
   setStatus('正在彙整痛點驗證狀態並產出報告…');
   try {
     const result = await api('/api/insight-reports', { method: 'POST', body: JSON.stringify({ profile_id: currentProfileId }) });
-    renderReport(result.report, '剛剛產出');
+    renderReport(result.report, '剛剛產出', result.id);
     setStatus('報告已產出。');
     await loadReportHistory();
   } catch (err) { setStatus('⚠ ' + err.message, true); }
@@ -1538,7 +1579,7 @@ async function loadReportHistory() {
     el.querySelectorAll('button').forEach(b => b.onclick = async () => {
       try {
         const result = await api(`/api/insight-reports/${b.dataset.id}`);
-        renderReport(result.report, '歷史報告');
+        renderReport(result.report, '歷史報告', result.id);
       } catch (err) { setStatus('⚠ ' + err.message, true); }
     });
   } catch (e) { /* 靜默失敗，不影響主流程 */ }
@@ -1909,8 +1950,11 @@ function renderReportLibrary() {
     btn.onclick = async () => {
       try {
         const result = await api(`/api/insight-reports/${card.dataset.id}`);
-        renderReport(result.report, '報告資料庫');
-        $('#report-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        renderReport(result.report, '報告資料庫', result.id);
+        // #report-result 現在是「潛在受眾地圖」頁面（page-segments）的一部分，
+        // 從報告資料庫（page-library）查看時要先切過去，不然渲染完使用者在原頁面看不到任何變化。
+        if (window.goToPage) window.goToPage('segments');
+        setTimeout(() => { const el = $('#report-result'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
       } catch (err) { setStatus('⚠ ' + err.message, true); }
     };
   });
@@ -2510,8 +2554,8 @@ async function renderDashboard() {
       reportBtn.onclick = async () => {
         try {
           const result = await api(`/api/insight-reports/${s.latestReportId}`);
-          renderReport(result.report, '總覽頁快速查看');
-          if (window.goToPage) window.goToPage('report');
+          renderReport(result.report, '總覽頁快速查看', result.id);
+          if (window.goToPage) window.goToPage('segments');
           setTimeout(() => { const el = $('#report-result'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
         } catch (err) { setStatus('⚠ ' + err.message, true); }
       };
