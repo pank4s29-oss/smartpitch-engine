@@ -7,6 +7,20 @@ create table public.domain_profiles (
   domain_tag text not null, audience text not null, price_tier text not null check (price_tier in ('low','high')),
   business_constraints jsonb not null default '[]'::jsonb, created_at timestamptz not null default now()
 );
+
+-- 報告資料庫：每筆報告保存產出當下的痛點列表與潛在受眾地圖快照，
+-- 讓使用者可以依產品／服務與報告性質回顧、編輯、刪除及重新匯出。
+create table public.audience_reports (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  domain_profile_id uuid not null references public.domain_profiles(id) on delete cascade,
+  title text not null,
+  report_type text not null default '受眾分析',
+  description text not null default '',
+  snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 create table public.audience_pain_points (
   id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users(id) on delete cascade,
   domain_profile_id uuid not null references public.domain_profiles(id) on delete cascade,
@@ -51,6 +65,7 @@ create table public.swipe_copies (
 );
 
 alter table public.domain_profiles enable row level security;
+alter table public.audience_reports enable row level security;
 alter table public.audience_pain_points enable row level security;
 alter table public.product_solutions enable row level security;
 alter table public.generation_requests enable row level security;
@@ -62,6 +77,7 @@ alter table public.swipe_copies enable row level security;
 -- Identical policies are deliberate: own-row isolation for all app records.
 grant select, insert, update, delete on all tables in schema public to authenticated;
 create policy "own domain profiles" on public.domain_profiles for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+create policy "own audience reports" on public.audience_reports for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "own pain points" on public.audience_pain_points for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "own solutions" on public.product_solutions for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 create policy "own generation requests" on public.generation_requests for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
@@ -71,4 +87,5 @@ create policy "own copy blocks" on public.copy_blocks for all to authenticated u
 create policy "own swipe copies" on public.swipe_copies for all to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
 
 create index generation_requests_user_created on public.generation_requests(user_id, created_at desc);
+create index audience_reports_user_profile_updated on public.audience_reports(user_id, domain_profile_id, updated_at desc);
 create index swipe_copies_user_created on public.swipe_copies(user_id, created_at desc);
