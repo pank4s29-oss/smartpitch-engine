@@ -88,7 +88,7 @@ async function handleCreate(req, res, user) {
 4. 全文字數需貼近目標字數，容許±20%誤差。`;
 
     const prompt = `【領域】${profile.domain_tag}
-【目標受眾】${profile.audience}
+【目標受眾】${Array.isArray(profile.audiences) ? profile.audiences.join('、') : (profile.audience || '（未設定）')}
 【產品/服務】${product_name}
 【產品說明】${product_description}
 【目標通路】${target_platform}
