@@ -17,6 +17,27 @@ const TAGGING_MAX_TOKENS = 500; // 輕量標籤化，不需要長輸出，才能
 const MAX_BATCH_SIZE = 200;
 const MIN_SAMPLE_SIZE_FOR_MATRIX = 2; // 少於這個文案數的痛點標籤，樣本太少，矩陣中會標記為低信度而非直接排除
 
+// 投放版位改為使用者自訂清單（比照語料來源分類 feedback_source_labels 的做法），
+// 這幾個是首次使用時自動帶入的預設值，之後使用者可自由新增／刪除。
+// value 是實際存進 ad_copies.platform 欄位（逗號分隔字串）的 slug，label 是畫面顯示文字；
+// 預設的 4 個 value 刻意沿用舊版寫死時期就在用的 slug，讓既有資料的 platform 欄位不用轉換。
+const DEFAULT_PLACEMENTS = [
+  { label: 'Facebook', value: 'facebook' },
+  { label: 'Instagram', value: 'instagram' },
+  { label: 'Audience Network', value: 'audience_network' },
+  { label: 'Messenger', value: 'messenger' },
+];
+const MAX_PLACEMENT_LABEL_LENGTH = 20;
+
+// 把使用者輸入的顯示名稱轉成適合存進 platform 欄位的 slug：轉小寫、非英數字元換成底線，
+// 避免使用者輸入「TikTok 廣告」之類含空白/中文的名稱時，跟既有的逗號分隔字串格式衝突。
+function slugifyPlacement(label) {
+  const base = (label || '').trim().toLowerCase()
+    .replace(/[^\w\u4e00-\u9fff]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return base || 'placement';
+}
+
 // ── 文字正規化與 Hash ──────────────────────────────────────────────────────
 // 刻意只做 trim／空白壓縮／統一換行，不做語意層級的模糊比對：這裡要抓的是
 // 「同一份文案」，近似但不同的改寫版本本來就該被視為不同素材各自計算成效，
@@ -517,11 +538,75 @@ async function handleDelete(req, res, user, id) {
   }
 }
 
+// ---- 投放版位管理 ----
+
+async function handleListPlacements(req, res, user) {
+  try {
+    let labels = await restRequest(`ad_placement_labels?user_id=eq.${user.id}&select=*&order=sort_order.asc,created_at.asc`);
+    if (!labels.length) {
+      // 第一次使用，帶入預設版位，之後使用者可自由增刪。
+      const rows = DEFAULT_PLACEMENTS.map((p, i) => ({ user_id: user.id, label: p.label, value: p.value, sort_order: i }));
+      labels = await restRequest('ad_placement_labels', { method: 'POST', prefer: 'return=representation', body: rows });
+      labels.sort((a, b) => a.sort_order - b.sort_order);
+    }
+    return res.status(200).json(labels);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+async function handleCreatePlacement(req, res, user) {
+  const label = (req.body && req.body.label || '').trim();
+  if (!label) return sendError(res, 400, '請輸入版位名稱。');
+  if (label.length > MAX_PLACEMENT_LABEL_LENGTH) return sendError(res, 400, `版位名稱不可超過 ${MAX_PLACEMENT_LABEL_LENGTH} 字。`);
+  try {
+    const existing = await restRequest(`ad_placement_labels?user_id=eq.${user.id}&select=id,label,value`);
+    if (existing.some(l => l.label.toLowerCase() === label.toLowerCase())) {
+      return sendError(res, 409, '這個版位已經存在。');
+    }
+    let value = slugifyPlacement(label);
+    // slug 撞名時（例如「TikTok」跟「Tiktok」都會 slug 成 tiktok）附加流水號，
+    // 確保同一使用者底下的 value 一定唯一，platform 欄位比對才不會互相混淆。
+    if (existing.some(l => l.value === value)) {
+      let i = 2;
+      while (existing.some(l => l.value === `${value}_${i}`)) i++;
+      value = `${value}_${i}`;
+    }
+    const countRes = await restRequest(`ad_placement_labels?user_id=eq.${user.id}&select=sort_order&order=sort_order.desc&limit=1`);
+    const nextOrder = countRes.length ? countRes[0].sort_order + 1 : 0;
+    const [saved] = await restRequest('ad_placement_labels', {
+      method: 'POST', prefer: 'return=representation', body: { user_id: user.id, label, value, sort_order: nextOrder },
+    });
+    return res.status(200).json(saved);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
+async function handleDeletePlacement(req, res, user, id) {
+  try {
+    await restRequest(`ad_placement_labels?id=eq.${id}&user_id=eq.${user.id}`, { method: 'DELETE' });
+    return res.status(200).json({ deleted: true });
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 module.exports = async (req, res) => {
   const user = await getUserFromRequest(req);
   if (!user) return sendError(res, 401, '請先登入。');
 
   const { action, id } = req.query || {};
+
+  if (action === 'placements') {
+    if (id) {
+      if (req.method !== 'DELETE') return sendError(res, 405, '不支援的方法。');
+      return handleDeletePlacement(req, res, user, id);
+    }
+    if (req.method === 'GET') return handleListPlacements(req, res, user);
+    if (req.method === 'POST') return handleCreatePlacement(req, res, user);
+    return sendError(res, 405, '不支援的方法。');
+  }
 
   if (action === 'batch-import') {
     if (req.method !== 'POST') return sendError(res, 405, '不支援的方法。');
