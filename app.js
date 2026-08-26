@@ -1387,6 +1387,10 @@ async function downloadReportDocx(profileId, btn) {
       throw new Error(msg);
     }
     const blob = await r.blob();
+    const signature = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+    if (signature[0] !== 0x50 || signature[1] !== 0x4B) {
+      throw new Error('伺服器回傳的 Word 檔案格式不正確，請檢查部署環境與匯出套件。');
+    }
     const disposition = r.headers.get('Content-Disposition') || '';
     const match = /filename="?([^";]+)"?/.exec(disposition);
     const filename = match ? decodeURIComponent(match[1]) : `受眾報告_${profileId}.docx`;
@@ -1404,6 +1408,40 @@ async function downloadReportDocx(profileId, btn) {
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = originalText; }
   }
+}
+
+function printReportPanel() {
+  const source = document.querySelector('#report-result .report-panel');
+  if (!source) return;
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    setStatus('⚠ 瀏覽器封鎖了列印視窗，請允許此網站開啟彈出視窗後再試。', true);
+    return;
+  }
+  const report = source.cloneNode(true);
+  report.querySelectorAll('.step-actions, button').forEach(node => node.remove());
+  const styles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style')).map(node => {
+    if (node.tagName.toLowerCase() === 'link') return `<link rel="stylesheet" href="${node.href}">`;
+    return node.outerHTML;
+  }).join('');
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>受眾分析報告</title>${styles}<style>
+    @page { size: A4; margin: 14mm 13mm; }
+    html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; background-color: #fff !important; color: #17231f !important; }
+    body { font-family: Arial, "Microsoft JhengHei", "Noto Sans TC", sans-serif !important; color-adjust: economy !important; -webkit-print-color-adjust: economy !important; }
+    .report-panel, .report-panel * { background: #fff !important; background-color: #fff !important; background-image: none !important; color: #17231f !important; }
+    .report-panel { display: block !important; width: auto !important; max-width: none !important; margin: 0 !important; padding: 0 !important; border: 0 !important; box-shadow: none !important; }
+    .report-panel .step-heading { display: flex !important; border-bottom: 2px solid #2f6f3e !important; padding-bottom: 12px !important; margin-bottom: 20px !important; }
+    .report-panel .pain-card { break-inside: avoid; page-break-inside: avoid; border: 1px solid #c8d9d0 !important; margin: 0 0 12px !important; padding: 14px 16px !important; }
+    .report-panel .deep-desire, .report-panel .muted { color: #4a554e !important; }
+    .divider { margin: 22px 0 !important; }
+  </style></head><body>${report.outerHTML}</body></html>`);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => {
+    printWindow.print();
+    setTimeout(() => printWindow.close(), 500);
+  }, 350);
 }
 
 function renderReport(data) {
@@ -1433,7 +1471,7 @@ function renderReport(data) {
   </div>`;
   container.hidden = false;
 
-  container.querySelector('.report-print').onclick = () => window.print();
+  container.querySelector('.report-print').onclick = printReportPanel;
   container.querySelector('.report-export-docx').onclick = e => downloadReportDocx(currentReportProfileId, e.currentTarget);
 
   container.scrollIntoView({ behavior: 'smooth', block: 'start' });
