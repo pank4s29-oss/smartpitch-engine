@@ -18,6 +18,12 @@ function round2(n) {
   return n === null || n === undefined ? null : Math.round(n * 100) / 100;
 }
 
+// 目標受眾改為可複選陣列（domain_profiles.audiences），統一組成一句話用於報告內容與 AI 導讀 prompt。
+function audienceLine(profile) {
+  const list = Array.isArray(profile.audiences) ? profile.audiences : [];
+  return list.length ? list.join('、') : (profile.audience || '（未設定）');
+}
+
 const CONSTRAINT_LABELS = {
   no_face: '不露臉',
   no_short_video: '不使用短影音',
@@ -183,7 +189,7 @@ async function buildReport(profile, painPoints, adMatrix) {
   return {
     domain_profile: {
       domain_tag: profile.domain_tag,
-      audience: profile.audience,
+      audiences: Array.isArray(profile.audiences) ? profile.audiences : (profile.audience ? [profile.audience] : []),
       price_tier: profile.price_tier,
       business_constraints: constraintsLabel(profile),
     },
@@ -222,7 +228,7 @@ async function generateNarrative(profile, report) {
 若下方提供了「真實廣告成效」資料，請明確區分「只有語料佐證」與「已有真實廣告成效驗證」這兩種等級的
 痛點差異，優先建議把資源放在兩者兼具的痛點上；若某個高置信度的痛點目前還沒有對應的廣告成效數據，
 也請提醒使用者這是可以優先安排測試、用真實花費數據驗證的方向。`;
-  const prompt = `領域：${profile.domain_tag}／受眾：${profile.audience}
+  const prompt = `領域：${profile.domain_tag}／受眾：${audienceLine(profile)}
 痛點總數：${report.coverage.total_pain_points}，有語料佐證：${report.coverage.with_evidence}，已人工確認：${report.coverage.confirmed}，平均置信度：${report.coverage.avg_confidence_score ?? '無資料'}
 已有真實廣告成效驗證的痛點數：${report.coverage.with_ad_performance ?? 0}／${report.coverage.total_pain_points}
 最具語料佐證力的痛點：${top.map(p => `「${p.surface_problem}」（置信度 ${p.confidence_score ?? '無'}）`).join('、') || '（尚無資料）'}
