@@ -244,6 +244,37 @@ async function handleCreate(req, res, user) {
   }
 }
 
+// 編輯一則已匯入的語料：允許修正語料內容本身的錯字/漏字，以及重新歸類語料來源分類。
+// 不允許在這裡改 domain_profile_id（歸屬哪個產品/服務設定），避免語料佐證關聯（pain point
+// 的 evidence_source 記錄的是 raw_customer_feedback_id）跟著錯位。
+async function handleUpdate(req, res, user, id) {
+  const { raw_text, source_type } = req.body || {};
+  const patch = {};
+  if (raw_text !== undefined) {
+    const trimmed = (raw_text || '').trim();
+    if (!trimmed) return sendError(res, 400, '語料內容不能為空。');
+    if (trimmed.length > MAX_TEXT_LENGTH) return sendError(res, 400, `語料內容過長（上限 ${MAX_TEXT_LENGTH} 字）。`);
+    patch.raw_text = trimmed;
+  }
+  if (source_type !== undefined) {
+    const trimmed = (source_type || '').trim();
+    if (!trimmed) return sendError(res, 400, '語料來源分類不能為空。');
+    patch.source_type = trimmed;
+  }
+  if (!Object.keys(patch).length) return sendError(res, 400, '沒有要更新的欄位。');
+  try {
+    const updated = await restRequest(`raw_customer_feedback?id=eq.${id}&user_id=eq.${user.id}`, {
+      method: 'PATCH',
+      prefer: 'return=representation',
+      body: patch,
+    });
+    if (!updated.length) return sendError(res, 404, '找不到對應的語料。');
+    return res.status(200).json(updated[0]);
+  } catch (err) {
+    return sendError(res, 500, err.message);
+  }
+}
+
 async function handleDelete(req, res, user, id) {
   try {
     await restRequest(`raw_customer_feedback?id=eq.${id}&user_id=eq.${user.id}`, { method: 'DELETE' });
@@ -314,6 +345,7 @@ module.exports = async (req, res) => {
   }
 
   if (id) {
+    if (req.method === 'PATCH') return handleUpdate(req, res, user, id);
     if (req.method !== 'DELETE') return sendError(res, 405, '不支援的方法。');
     return handleDelete(req, res, user, id);
   }
