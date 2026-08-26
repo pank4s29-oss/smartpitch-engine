@@ -13,6 +13,7 @@
 <button type="button" class="nav-item nav-item-scoped" data-page="segments"><span class="nav-item-icon" aria-hidden="true">03</span>潛在受眾地圖</button>
 <button type="button" class="nav-item nav-item-scoped" data-page="adcopies"><span class="nav-item-icon" aria-hidden="true">04</span>Meta 廣告效益</button>
 <hr class="sidebar-divider">
+<button type="button" class="nav-item" data-page="reports"><span class="nav-item-icon" aria-hidden="true">◍</span>報告資料庫</button>
 <button type="button" class="nav-item" data-page="swipe"><span class="nav-item-icon" aria-hidden="true">◍</span>產業文案手法庫</button>
 </nav>
 </aside>
@@ -225,11 +226,34 @@
 <section class="panel">
 <div class="step-heading"><b>04</b><div><h2>產出分析報告與匯出</h2><p>將目前的受眾潛在痛點列表與潛在受眾地圖整理成一份可閱讀、可下載的報告。</p></div></div>
 <button type="button" id="generate-report-btn">產出報告 →</button>
+<div id="report-save-editor" class="report-save-editor" hidden>
+<hr class="divider">
+<div class="step-heading report-editor-heading"><b>✎</b><div><h3 style="margin:0">保存到報告資料庫</h3><p>為這份報告設定名稱、性質與備註；保存後可在「報告資料庫」中編輯、刪除與重新匯出。</p></div></div>
+<form id="report-save-form">
+<div class="grid">
+<label>報告名稱<input name="title" required maxlength="100" placeholder="例：Q3 久坐上班族受眾分析"></label>
+<label>報告性質<select name="report_type"><option value="受眾分析">受眾分析</option><option value="產品／服務策略">產品／服務策略</option><option value="行銷企劃">行銷企劃</option><option value="客戶提案">客戶提案</option><option value="其他">其他</option></select></label>
+</div>
+<label>報告備註（選填）<textarea name="description" maxlength="500" placeholder="補充這份報告的使用情境、版本或交付對象"></textarea></label>
+<div class="pain-actions"><button type="submit" id="save-report-btn">保存報告</button><button type="button" id="report-refresh-current-btn" class="ghost">以目前資料重新產出</button></div>
+</form>
+</div>
 </section>
 
 <section id="report-result" hidden></section>
 
 </div>
+</section>
+
+<section class="page" data-page="reports" id="page-reports">
+<section class="panel">
+<div class="step-heading"><b>◍</b><div><h2>報告資料庫</h2><p>依產品／服務與報告性質整理過往保存的受眾分析報告，可查看、編輯、刪除與重新匯出。</p></div><div class="step-actions"><button type="button" id="reports-refresh-btn" class="ghost small">重新整理</button></div></div>
+<div id="report-library-filter-bar" class="filter-bar report-library-filter-bar">
+<select id="report-filter-profile"><option value="">全部產品／服務</option></select>
+<select id="report-filter-type"><option value="">全部報告性質</option><option value="受眾分析">受眾分析</option><option value="產品／服務策略">產品／服務策略</option><option value="行銷企劃">行銷企劃</option><option value="客戶提案">客戶提案</option><option value="其他">其他</option></select>
+</div>
+<div id="report-library-list" class="report-library-list"><p class="muted">尚無保存的報告。</p></div>
+</section>
 </section>
 
 <section class="page" data-page="adcopies" id="page-adcopies">
