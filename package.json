@@ -4,5 +4,8 @@
   "private": true,
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "docx": "^9.7.1"
   }
 }
