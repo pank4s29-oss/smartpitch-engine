@@ -1478,6 +1478,9 @@ function renderReport(report, meta, reportId) {
     narrativeEl.className += ' unavailable';
     narrativeEl.textContent = 'AI 導讀暫時無法產生，以下數據統計仍完整可用。';
   }
+  const editedTag = node.querySelector('.r-narrative-edited-tag');
+  if (editedTag) editedTag.hidden = !report.narrative_edited;
+  const narrativeRow = node.querySelector('.narrative-row');
 
   const c = report.coverage;
   const stats = [
@@ -1546,12 +1549,128 @@ function renderReport(report, meta, reportId) {
     toggleBtn.textContent = willShow ? '收合逐項分析 ←' : '顯示逐項分析 →';
   };
 
-  node.querySelector('.r-print').onclick = () => window.print();
+  // 列印／匯出 PDF：實際上是瀏覽器原生的「列印」功能，使用者用瀏覽器的列印對話框
+  // 選「另存為 PDF」。「受眾痛點逐項分析」預設是收合的（見上方 breakdownEl.hidden），
+  // 如果使用者沒有先手動點開就直接列印，整段最重要的逐項內容會因為 hidden 屬性
+  // 而完全不會出現在 PDF 裡——這正是「PDF 匯出不出來內容」的成因。這裡在呼叫
+  // window.print() 之前先自動展開，列印結束後再還原成使用者原本看到的收合／展開
+  // 狀態，不影響列印後繼續在畫面上操作報告的體驗。
+  node.querySelector('.r-print').onclick = () => {
+    const wasHidden = breakdownEl.hidden;
+    if (wasHidden) {
+      breakdownEl.hidden = false;
+      sortLabel.hidden = false;
+      toggleBtn.textContent = '收合逐項分析 ←';
+    }
+    const restore = () => {
+      if (wasHidden) {
+        breakdownEl.hidden = true;
+        sortLabel.hidden = true;
+        toggleBtn.textContent = '顯示逐項分析 →';
+      }
+      window.removeEventListener('afterprint', restore);
+    };
+    window.addEventListener('afterprint', restore);
+    // 部分瀏覽器（尤其某些行動裝置瀏覽器）不會確實觸發 afterprint，保底用 timeout 還原，
+    // 避免使用者列印完之後發現報告一直卡在展開狀態。
+    setTimeout(restore, 2000);
+    window.print();
+  };
   node.querySelector('.r-export-docx').onclick = e => downloadReportDocx(currentReportData.id, e.currentTarget);
+  node.querySelector('.r-delete-report').onclick = e => deleteCurrentReport(currentReportData.id, e.currentTarget, container);
+  node.querySelector('.r-edit-narrative').onclick = () => startEditNarrative(narrativeRow, currentReportData);
 
   container.append(node);
   container.hidden = false;
   container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// 刪除目前正在檢視的這份報告。跟報告資料庫（洞察報告資料庫頁面）裡的刪除是同一支
+// API，這裡另外提供入口是因為使用者常常是「剛產出／剛打開報告」才發現這份不需要，
+// 不需要特地切到資料庫頁面才能刪除。
+async function deleteCurrentReport(reportId, btn, container) {
+  if (!reportId) { setStatus('⚠ 找不到這份報告的 id，請重新產出或重新開啟報告後再試一次。', true); return; }
+  if (!confirm('確定要刪除這份報告嗎？此操作無法復原。')) return;
+  btn.disabled = true;
+  try {
+    await api(`/api/insight-reports/${reportId}`, { method: 'DELETE' });
+    container.innerHTML = '';
+    container.hidden = true;
+    currentReportData = null;
+    setStatus('已刪除報告。');
+    if (typeof loadReportHistory === 'function' && currentProfileId) await loadReportHistory();
+    if (typeof reportLibraryCache !== 'undefined') {
+      reportLibraryCache = reportLibraryCache.filter(r => r.id !== reportId);
+      if (typeof renderReportLibrary === 'function') renderReportLibrary();
+    }
+  } catch (err) {
+    setStatus('⚠ ' + err.message, true);
+    btn.disabled = false;
+  }
+}
+
+// 編輯導讀：報告裡唯一開放編輯的欄位就是這段 AI 導讀文字——其餘統計數字／逐項痛點
+// 都是程式碼依實際資料算出來的，開放任意竄改會讓報告失去「可信」這個核心價值。
+// 常見情境是要把導讀語氣調整一下再匯出給客戶，或是 AI 導讀當次生成失敗、想手動補一段。
+const NARRATIVE_MAX_LENGTH = 500;
+
+function startEditNarrative(narrativeRow, reportData) {
+  if (!narrativeRow || !reportData) return;
+  const narrativeEl = narrativeRow.querySelector('.r-narrative');
+  const editBtn = narrativeRow.querySelector('.r-edit-narrative');
+
+  const box = document.createElement('div');
+  box.className = 'narrative-edit-box';
+  box.innerHTML = `
+    <textarea maxlength="${NARRATIVE_MAX_LENGTH}">${esc(reportData.report.narrative || '')}</textarea>
+    <div class="char-count">0 / ${NARRATIVE_MAX_LENGTH}</div>
+    <div class="step-actions">
+      <button type="button" class="small ne-save">儲存</button>
+      <button type="button" class="small ghost ne-cancel">取消</button>
+    </div>`;
+  narrativeEl.hidden = true;
+  editBtn.hidden = true;
+  narrativeRow.after(box);
+
+  const textarea = box.querySelector('textarea');
+  const countEl = box.querySelector('.char-count');
+  const updateCount = () => {
+    const len = textarea.value.length;
+    countEl.textContent = `${len} / ${NARRATIVE_MAX_LENGTH}`;
+    countEl.classList.toggle('warn', len > NARRATIVE_MAX_LENGTH);
+  };
+  textarea.addEventListener('input', updateCount);
+  updateCount();
+  textarea.focus();
+
+  const cleanup = () => {
+    box.remove();
+    narrativeEl.hidden = false;
+    editBtn.hidden = false;
+  };
+  box.querySelector('.ne-cancel').onclick = cleanup;
+  box.querySelector('.ne-save').onclick = async () => {
+    const value = textarea.value.trim();
+    if (value.length > NARRATIVE_MAX_LENGTH) {
+      setStatus(`⚠ 導讀內容過長，請控制在 ${NARRATIVE_MAX_LENGTH} 字以內。`, true);
+      return;
+    }
+    const saveBtn = box.querySelector('.ne-save');
+    saveBtn.disabled = true;
+    saveBtn.textContent = '儲存中…';
+    try {
+      const result = await api(`/api/insight-reports/${reportData.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ narrative: value }),
+      });
+      renderReport(result.report, reportData.meta, result.id);
+      setStatus('已更新導讀內容。');
+    } catch (err) {
+      setStatus('⚠ ' + err.message, true);
+      saveBtn.disabled = false;
+      saveBtn.textContent = '儲存';
+    }
+  };
 }
 
 $('#generate-report-btn').onclick = async () => {
