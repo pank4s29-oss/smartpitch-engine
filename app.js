@@ -176,6 +176,10 @@ function setProfileFormMode(mode, profile) {
     profileAudienceTags = [...audiencesOf(profile)];
     const radio = form.querySelector(`input[name="price_tier"][value="${profile.price_tier}"]`);
     if (radio) radio.checked = true;
+    if (form.price_range_min) form.price_range_min.value = profile.price_range_min ?? '';
+    if (form.price_range_max) form.price_range_max.value = profile.price_range_max ?? '';
+    if (form.price_currency) form.price_currency.value = profile.price_currency || 'TWD';
+    if (form.price_position_note) form.price_position_note.value = profile.price_position_note || '';
     form.product_name.value = profile.product_name || '';
     form.core_selling_point.value = profile.core_selling_point || '';
     form.solution_description.value = profile.solution_description || '';
@@ -321,6 +325,7 @@ function onProfileSelected(id) {
   if (matchedTemplatesResult) matchedTemplatesResult.innerHTML = '';
   resetSegmentsPanel();
   resetAdCopiesPanel();
+  resetCompetitorPanel();
   refreshProfileScope();
 }
 
@@ -328,7 +333,7 @@ async function refreshProfileScope() {
   // loadPainPoints() 先跑完，是因為潛在受眾地圖的卡片要顯示「對應哪些痛點」的標籤，
   // 需要 painPointsCache 已經有資料才能對得上，不能跟 loadSegments() 同時搶著跑。
   await loadPainPoints();
-  await Promise.all([loadSourceLabels(), loadFeedback(), loadAdCopies(), loadSegments()]);
+  await Promise.all([loadSourceLabels(), loadFeedback(), loadAdCopies(), loadSegments(), loadCompetitorBrands()]);
 }
 
 // ---------------- 語料來源分類管理 ----------------
@@ -2474,6 +2479,185 @@ if (buildMatrixBtn) {
   };
 }
 
+// ---------------- 競品定位比較（商業企劃書 P1 項目） ----------------
+// 純使用者手動輸入的競品品牌資料（刻意不做爬蟲），搭配「更精緻的價位帶」欄位，
+// 供人工比較與 AI 差異化定位分析。比對用的分析結果不落地保存，每次點擊即時運算，
+// 理由跟效益驗證矩陣不同、跟報告資料庫的設計理念一致：避免「分析結果跟畫面上的
+// 競品清單對不上」的問題。
+
+let competitorBrandsCache = [];
+let editingCompetitorId = null;
+
+function priceRangeLabel(min, max, currency) {
+  const cur = currency || 'TWD';
+  if (min === null || min === undefined) min = null;
+  if (max === null || max === undefined) max = null;
+  if (min === null && max === null) return '未提供價位';
+  if (min !== null && max !== null) return `${cur} ${min}–${max}`;
+  if (min !== null) return `${cur} ${min} 以上`;
+  return `${cur} ${max} 以下`;
+}
+
+function resetCompetitorPanel() {
+  competitorBrandsCache = [];
+  editingCompetitorId = null;
+  const form = $('#competitor-form');
+  if (form) { form.reset(); form.classList.remove('editing'); }
+  const cancelBtn = $('#competitor-form-cancel');
+  if (cancelBtn) cancelBtn.hidden = true;
+  const submitBtn = $('#competitor-form-submit');
+  if (submitBtn) submitBtn.textContent = '新增競品品牌';
+  const list = $('#competitor-list');
+  if (list) list.innerHTML = '<p class="muted">尚未新增任何競品品牌。</p>';
+  const result = $('#competitor-compare-result');
+  if (result) result.innerHTML = '<p class="muted">尚未分析。請先新增至少 1 個競品品牌，再點擊「開始分析」。</p>';
+}
+
+async function loadCompetitorBrands() {
+  if (!currentProfileId) return;
+  try {
+    competitorBrandsCache = await api(`/api/competitor-brands?domain_profile_id=${currentProfileId}`);
+    renderCompetitorList();
+  } catch (e) { setStatus('⚠ ' + e.message, true); }
+}
+
+function renderCompetitorList() {
+  const list = $('#competitor-list');
+  if (!list) return;
+  if (!competitorBrandsCache.length) {
+    list.innerHTML = '<p class="muted">尚未新增任何競品品牌。</p>';
+    return;
+  }
+  list.innerHTML = competitorBrandsCache.map(c => `
+    <article class="pain-card" data-id="${esc(c.id)}">
+      <div class="pain-card-head">
+        <h4>${esc(c.brand_name)}</h4>
+        <span class="muted">${esc(priceRangeLabel(c.price_range_min, c.price_range_max, c.price_currency))}</span>
+      </div>
+      ${c.target_audience ? `<p class="muted">主打受眾：${esc(c.target_audience)}</p>` : ''}
+      ${c.positioning_summary ? `<p>${esc(c.positioning_summary)}</p>` : ''}
+      ${c.differentiation_notes ? `<p class="muted">我方筆記：${esc(c.differentiation_notes)}</p>` : ''}
+      ${c.source_url ? `<p class="muted"><a href="${esc(c.source_url)}" target="_blank" rel="noopener">參考連結 ↗</a></p>` : ''}
+      <div class="pain-actions">
+        <button type="button" class="ghost small competitor-edit-btn">編輯</button>
+        <button type="button" class="danger small competitor-delete-btn">刪除</button>
+      </div>
+    </article>
+  `).join('');
+
+  list.querySelectorAll('.competitor-edit-btn').forEach(btn => {
+    btn.onclick = () => {
+      const id = btn.closest('[data-id]').dataset.id;
+      const c = competitorBrandsCache.find(x => x.id === id);
+      if (c) setCompetitorFormMode('edit', c);
+    };
+  });
+  list.querySelectorAll('.competitor-delete-btn').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.closest('[data-id]').dataset.id;
+      const c = competitorBrandsCache.find(x => x.id === id);
+      if (!confirm(`確定要刪除競品品牌「${c ? c.brand_name : ''}」嗎？`)) return;
+      try {
+        await api(`/api/competitor-brands?id=${id}`, { method: 'DELETE' });
+        setStatus('已刪除競品品牌。');
+        if (editingCompetitorId === id) setCompetitorFormMode('create');
+        await loadCompetitorBrands();
+      } catch (err) { setStatus('⚠ ' + err.message, true); }
+    };
+  });
+}
+
+function setCompetitorFormMode(mode, competitor) {
+  const form = $('#competitor-form');
+  const submitBtn = $('#competitor-form-submit');
+  const cancelBtn = $('#competitor-form-cancel');
+  if (!form) return;
+  editingCompetitorId = mode === 'edit' ? competitor.id : null;
+  form.classList.toggle('editing', mode === 'edit');
+  if (mode === 'edit') {
+    form.brand_name.value = competitor.brand_name || '';
+    form.source_url.value = competitor.source_url || '';
+    form.price_range_min.value = competitor.price_range_min ?? '';
+    form.price_range_max.value = competitor.price_range_max ?? '';
+    form.price_currency.value = competitor.price_currency || 'TWD';
+    form.target_audience.value = competitor.target_audience || '';
+    form.positioning_summary.value = competitor.positioning_summary || '';
+    form.differentiation_notes.value = competitor.differentiation_notes || '';
+    submitBtn.textContent = '更新競品品牌';
+    if (cancelBtn) cancelBtn.hidden = false;
+  } else {
+    form.reset();
+    submitBtn.textContent = '新增競品品牌';
+    if (cancelBtn) cancelBtn.hidden = true;
+  }
+}
+
+const competitorForm = $('#competitor-form');
+if (competitorForm) {
+  competitorForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!currentProfileId) { setStatus('⚠ 請先選擇產品/服務設定。', true); return; }
+    const formData = new FormData(e.target);
+    const data = Object.fromEntries(formData);
+    try {
+      if (editingCompetitorId) {
+        await api(`/api/competitor-brands?id=${editingCompetitorId}`, { method: 'PATCH', body: JSON.stringify(data) });
+        setStatus('已更新競品品牌。');
+      } else {
+        await api('/api/competitor-brands', { method: 'POST', body: JSON.stringify({ ...data, domain_profile_id: currentProfileId }) });
+        setStatus('已新增競品品牌。');
+      }
+      setCompetitorFormMode('create');
+      await loadCompetitorBrands();
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+  });
+}
+
+const competitorCancelBtn = $('#competitor-form-cancel');
+if (competitorCancelBtn) competitorCancelBtn.onclick = () => setCompetitorFormMode('create');
+
+function renderCompetitorCompareResult(result) {
+  const container = $('#competitor-compare-result');
+  if (!container) return;
+  if (result.message) {
+    container.innerHTML = `<p class="muted">${esc(result.message)}</p>`;
+    return;
+  }
+  const insightRows = (result.competitor_insights || []).map(i => `
+    <div class="r-breakdown-row"><strong>${esc(i.brand_name)}</strong><p>${esc(i.differentiation_point)}</p></div>
+  `).join('');
+  const riskRows = (result.risk_flags || []).length
+    ? `<ul>${result.risk_flags.map(r => `<li>${esc(r)}</li>`).join('')}</ul>`
+    : '<p class="muted">目前沒有明顯的價位或受眾重疊風險。</p>';
+  container.innerHTML = `
+    <h3 style="margin:0 0 8px">整體價位缺口</h3>
+    <p>${esc(result.price_gap_summary || '')}</p>
+    <h3 style="margin:16px 0 8px">建議定位語句</h3>
+    <p><strong>${esc(result.recommended_positioning || '')}</strong></p>
+    <h3 style="margin:16px 0 8px">逐一競品差異化重點</h3>
+    <div class="r-breakdown">${insightRows || '<p class="muted">尚無資料。</p>'}</div>
+    <h3 style="margin:16px 0 8px">風險提醒</h3>
+    ${riskRows}
+    ${result.truncated ? `<p class="muted" style="margin-top:10px">已輸入的競品超過 ${result.based_on_competitor_count} 個上限，僅取最早新增的 ${result.based_on_competitor_count} 個進行分析。</p>` : ''}
+  `;
+}
+
+const competitorCompareBtn = $('#competitor-compare-btn');
+if (competitorCompareBtn) {
+  competitorCompareBtn.onclick = async () => {
+    if (!currentProfileId) return;
+    competitorCompareBtn.disabled = true;
+    const original = competitorCompareBtn.textContent;
+    competitorCompareBtn.textContent = '分析中…';
+    try {
+      const result = await api(`/api/competitor-brands?domain_profile_id=${currentProfileId}&action=compare`);
+      renderCompetitorCompareResult(result);
+      setStatus(result.message ? result.message : '已產出差異化定位分析。');
+    } catch (err) { setStatus('⚠ ' + err.message, true); }
+    finally { competitorCompareBtn.disabled = false; competitorCompareBtn.textContent = original; }
+  };
+}
+
 // 帳號角落元件（身份確認收合）與帳號設定 modal 已搬到獨立的 account-corner.js
 // （比 app.js 更早載入），避免這支檔案裡任何不相關的錯誤把角落的登入狀態顯示拖垮。
 // 詳見 account-corner.js 開頭的說明註解。
@@ -2530,7 +2714,7 @@ function dashboardProfileCardHtml(s) {
   const confirmRatio = s.painTotal ? `${s.painConfirmed}／${s.painTotal}` : '0';
   return `<article class="dashboard-card" data-id="${esc(p.id)}">
     <div class="dashboard-card-head">
-      <div><h3>${esc(profileLabel(p))}</h3><p class="muted">${esc(audiencesOf(p).join('、'))}｜${esc(priceTierLabel(p))}</p></div>
+      <div><h3>${esc(profileLabel(p))}</h3><p class="muted">${esc(audiencesOf(p).join('、'))}｜${esc(priceTierLabel(p))}${(p.price_range_min !== null && p.price_range_min !== undefined) || (p.price_range_max !== null && p.price_range_max !== undefined) ? `（${esc(priceRangeLabel(p.price_range_min, p.price_range_max, p.price_currency))}）` : ''}</p></div>
     </div>
     <div class="dashboard-card-stats">
       <div class="dashboard-stat"><span class="num">${confirmRatio}</span><small>痛點（已確認／總數）</small></div>
