@@ -10,6 +10,7 @@
     { "source": "/api/insight-reports/:id", "destination": "/api/insight-reports-hub?id=:id" },
     { "source": "/api/audience-reports/:id", "destination": "/api/audience-reports-hub?id=:id" },
     { "source": "/api/audience-reports", "destination": "/api/audience-reports-hub" },
+    { "source": "/api/competitor-brands", "destination": "/api/competitor-brands-hub" },
     { "source": "/api/swipe-copies/facets", "destination": "/api/swipe-copies-hub?action=facets" },
     { "source": "/api/swipe-copies/:id/template", "destination": "/api/swipe-copies-hub?id=:id&action=template" },
     { "source": "/api/swipe-copies", "destination": "/api/swipe-copies-hub" },
@@ -38,6 +39,9 @@
       "maxDuration": 30
     },
     "api/audience-reports-hub.js": {
+      "maxDuration": 30
+    },
+    "api/competitor-brands-hub.js": {
       "maxDuration": 30
     },
     "api/ad-copies-hub.js": {
