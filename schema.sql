@@ -92,3 +92,63 @@ create policy "own swipe copies" on public.swipe_copies for all to authenticated
 create index generation_requests_user_created on public.generation_requests(user_id, created_at desc);
 create index audience_reports_user_profile_updated on public.audience_reports(user_id, domain_profile_id, updated_at desc);
 create index swipe_copies_user_created on public.swipe_copies(user_id, created_at desc);
+
+-- ============================================================================
+-- Migration (2026-09)：競品定位比較模組 ＋ 更精緻的價位帶欄位
+-- 商業企劃書 P1 項目。若是既有（已上線）的資料庫，只需要在 Supabase SQL Editor
+-- 執行「這個區塊」（從這行註解開始到檔案結尾），不用重跑上面 create table 那些
+-- 沒有 IF NOT EXISTS 的舊表——這個區塊本身皆用 IF NOT EXISTS／IF EXISTS／
+-- exception when duplicate_object 包住，可重複執行不報錯。
+-- ============================================================================
+
+-- 更精緻的價位帶：price_tier（low/high）維持不變，繼續作為既有邏輯（例如文案生成
+-- 預設區塊順序 DEFAULT_BLOCK_ORDER）的分類依據，不動舊有行為；這裡新增具體價格
+-- 區間與一段可自訂的定位說明，兩者並存、互相補充，而非取代。
+alter table public.domain_profiles add column if not exists price_range_min numeric;
+alter table public.domain_profiles add column if not exists price_range_max numeric;
+alter table public.domain_profiles add column if not exists price_currency text not null default 'TWD';
+alter table public.domain_profiles add column if not exists price_position_note text not null default '';
+
+do $$ begin
+  alter table public.domain_profiles
+    add constraint domain_profiles_price_range_valid
+    check (price_range_min is null or price_range_max is null or price_range_min <= price_range_max);
+exception when duplicate_object then null;
+end $$;
+
+-- 競品定位比較：使用者自行輸入的競品品牌資料，供人工比較與 AI 差異化分析使用。
+-- 刻意不做語料爬蟲或自動抓取——競品定位判讀需要人工把關，避免抓到錯誤或過期資訊。
+create table if not exists public.competitor_brands (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  domain_profile_id uuid not null references public.domain_profiles(id) on delete cascade,
+  brand_name text not null,
+  price_range_min numeric,
+  price_range_max numeric,
+  price_currency text not null default 'TWD',
+  target_audience text not null default '',
+  positioning_summary text not null default '',
+  differentiation_notes text not null default '',
+  source_url text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+do $$ begin
+  alter table public.competitor_brands
+    add constraint competitor_brands_price_range_valid
+    check (price_range_min is null or price_range_max is null or price_range_min <= price_range_max);
+exception when duplicate_object then null;
+end $$;
+
+alter table public.competitor_brands enable row level security;
+grant select, insert, update, delete on public.competitor_brands to authenticated;
+
+do $$ begin
+  create policy "own competitor brands" on public.competitor_brands for all to authenticated
+    using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+exception when duplicate_object then null;
+end $$;
+
+create index if not exists competitor_brands_user_profile_created
+  on public.competitor_brands(user_id, domain_profile_id, created_at desc);
