@@ -3,6 +3,15 @@ const { getUserFromRequest, restRequest, sendError } = require('../_lib/supabase
 const norm = s => (s || '').trim().toLowerCase();
 const PRIMARY_CONVERSION_EVENTS = new Set(['lead', 'purchase', 'complete_registration', 'schedule', 'add_to_cart']);
 
+// 更精緻的價位帶（商業企劃書 P1 項目）：price_tier（low/high）維持不變，繼續作為既有分類依據
+// （例如文案生成的預設區塊順序），這裡新增的具體價格區間與定位說明是「補充」而非「取代」，
+// 兩者並存——沒填具體區間的舊資料仍可正常運作，只是競品比較等新功能的分析會比較粗略。
+function numOrNull(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 // 目標受眾改為可複選陣列：統一在這裡做清理（trim、去空字串、去重複），
 // 前端可能傳來字串（單一受眾，向後相容）或陣列（多個受眾），這裡一律正規化成
 // 一個去重過、有序的字串陣列，避免髒資料（例如重複新增同一個受眾兩次）寫進資料庫。
@@ -41,6 +50,7 @@ module.exports = async (req, res) => {
       domain_tag, audience, audiences, price_tier, constraints,
       product_name, core_selling_point, solution_description, trust_proof,
       primary_conversion_event, workflow_notes,
+      price_range_min, price_range_max, price_currency, price_position_note,
     } = req.body || {};
     // audiences 是新欄位（陣列）；audience（單一字串）保留相容，若前端還沒更新也不會壞掉。
     const audienceList = normalizeAudiences(audiences !== undefined ? audiences : audience);
@@ -52,6 +62,11 @@ module.exports = async (req, res) => {
     }
     if (primary_conversion_event && !PRIMARY_CONVERSION_EVENTS.has(primary_conversion_event)) {
       return sendError(res, 400, '不支援的主要轉換事件。');
+    }
+    const priceMin = numOrNull(price_range_min);
+    const priceMax = numOrNull(price_range_max);
+    if (priceMin !== null && priceMax !== null && priceMin > priceMax) {
+      return sendError(res, 400, '價位下限不能大於上限。');
     }
     try {
       // 重複偵測：同一使用者底下，領域＋受眾組合（忽略大小寫、前後空白與順序）相同就視為重複，
@@ -82,6 +97,10 @@ module.exports = async (req, res) => {
           trust_proof: trust_proof || null,
           primary_conversion_event: primary_conversion_event || 'lead',
           workflow_notes: workflow_notes || '',
+          price_range_min: priceMin,
+          price_range_max: priceMax,
+          price_currency: (price_currency || 'TWD').trim() || 'TWD',
+          price_position_note: (price_position_note || '').trim(),
         },
       });
       return res.status(200).json(profile);
@@ -132,6 +151,7 @@ module.exports = async (req, res) => {
       domain_tag, audience, audiences, price_tier, constraints,
       product_name, core_selling_point, solution_description, trust_proof,
       primary_conversion_event, workflow_notes,
+      price_range_min, price_range_max, price_currency, price_position_note,
     } = req.body || {};
     const patch = {};
     if (domain_tag !== undefined) patch.domain_tag = domain_tag;
@@ -153,8 +173,24 @@ module.exports = async (req, res) => {
       patch.primary_conversion_event = primary_conversion_event;
     }
     if (workflow_notes !== undefined) patch.workflow_notes = workflow_notes || '';
+    if (price_range_min !== undefined) patch.price_range_min = numOrNull(price_range_min);
+    if (price_range_max !== undefined) patch.price_range_max = numOrNull(price_range_max);
+    if (price_currency !== undefined) patch.price_currency = (price_currency || 'TWD').trim() || 'TWD';
+    if (price_position_note !== undefined) patch.price_position_note = (price_position_note || '').trim();
     if (!Object.keys(patch).length) return sendError(res, 400, '沒有要更新的欄位。');
     try {
+      // 只改動 min 或只改動 max 其中一邊時，仍要跟資料庫裡既有的另一邊比較，避免存進
+      // 「下限大於上限」的髒資料（例如原本 min=100/max=500，這次只把 max 改成 50）。
+      if (patch.price_range_min !== undefined || patch.price_range_max !== undefined) {
+        const [existing] = await restRequest(`domain_profiles?id=eq.${id}&user_id=eq.${user.id}&select=price_range_min,price_range_max`);
+        if (existing) {
+          const effectiveMin = patch.price_range_min !== undefined ? patch.price_range_min : existing.price_range_min;
+          const effectiveMax = patch.price_range_max !== undefined ? patch.price_range_max : existing.price_range_max;
+          if (effectiveMin !== null && effectiveMax !== null && effectiveMin !== undefined && effectiveMax !== undefined && effectiveMin > effectiveMax) {
+            return sendError(res, 400, '價位下限不能大於上限。');
+          }
+        }
+      }
       const updated = await restRequest(`domain_profiles?id=eq.${id}&user_id=eq.${user.id}`, {
         method: 'PATCH',
         prefer: 'return=representation',
