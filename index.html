@@ -12,6 +12,7 @@
 <button type="button" class="nav-item nav-item-scoped" data-page="feedback"><span class="nav-item-icon" aria-hidden="true">02</span>語料與痛點</button>
 <button type="button" class="nav-item nav-item-scoped" data-page="segments"><span class="nav-item-icon" aria-hidden="true">03</span>潛在受眾地圖</button>
 <button type="button" class="nav-item nav-item-scoped" data-page="adcopies"><span class="nav-item-icon" aria-hidden="true">04</span>Meta 廣告效益</button>
+<button type="button" class="nav-item nav-item-scoped" data-page="competitors"><span class="nav-item-icon" aria-hidden="true">05</span>競品比較</button>
 <hr class="sidebar-divider">
 <button type="button" class="nav-item" data-page="reports"><span class="nav-item-icon" aria-hidden="true">◍</span>報告資料庫</button>
 <button type="button" class="nav-item" data-page="swipe"><span class="nav-item-icon" aria-hidden="true">◍</span>產業文案手法庫</button>
@@ -112,6 +113,13 @@
 <label class="choice"><input type="radio" name="price_tier" value="low" checked> 低單價／快速決策</label>
 <label class="choice"><input type="radio" name="price_tier" value="high"> 高客單／建立信任</label>
 </fieldset>
+<div class="grid">
+<label>具體價位下限（選填）<input name="price_range_min" type="number" step="0.01" placeholder="例：990"></label>
+<label>具體價位上限（選填）<input name="price_range_max" type="number" step="0.01" placeholder="例：1980"></label>
+<label>幣別<input name="price_currency" maxlength="10" placeholder="TWD" value="TWD"></label>
+</div>
+<label>定位說明（選填）<textarea name="price_position_note" maxlength="500" placeholder="這組價位帶背後的定位邏輯，例如：主打入門族群、用低價換取快速決策"></textarea></label>
+<p class="muted" style="margin-top:-6px">低單價／高客單只是粗略分類；填上具體價位區間與定位說明，「競品定位比較」的 AI 分析會更精準。</p>
 <hr class="divider">
 <p class="muted" style="margin-bottom:14px">以下解決方案只需要填一次，會套用到這組設定底下的所有痛點，不用每個痛點各自重填。</p>
 <div class="grid">
@@ -341,6 +349,44 @@
 <div class="step-heading"><b>&#9679;</b><div><h3 style="margin:0">效益驗證矩陣</h3><p>依真實成效交叉計算「痛點轉換矩陣」與「高點閱率結構模板」，純運算不呼叫 AI。</p></div></div>
 <button type="button" id="build-matrix-btn" class="secondary">產出效益驗證矩陣 →</button>
 <div id="matrix-result"></div>
+</section>
+
+</div>
+</section>
+
+<section class="page" data-page="competitors" id="page-competitors">
+<p class="profile-required-hint muted">請先在「產品／服務設定」頁面選擇或建立一組設定。</p>
+<div class="requires-profile">
+
+<section class="panel">
+<div class="step-heading"><b>05</b><div><h2>競品定位比較</h2><p>手動輸入這組產品／服務設定要對照的競品品牌資料，供人工比較與 AI 差異化定位分析——刻意不做語料爬蟲或自動抓取，競品定位判讀需要人工把關，避免抓到錯誤或過期資訊。</p></div></div>
+
+<form id="competitor-form">
+<div class="grid">
+<label>競品品牌名稱<input name="brand_name" required maxlength="60" placeholder="例：品牌 A"></label>
+<label>來源連結（選填）<input name="source_url" type="url" placeholder="https://…"></label>
+</div>
+<div class="grid">
+<label>價位下限（選填）<input name="price_range_min" type="number" step="0.01" placeholder="例：990"></label>
+<label>價位上限（選填）<input name="price_range_max" type="number" step="0.01" placeholder="例：1980"></label>
+<label>幣別<input name="price_currency" maxlength="10" placeholder="TWD" value="TWD"></label>
+</div>
+<label>主打受眾（選填）<input name="target_audience" placeholder="例：25–35 歲新手媽媽"></label>
+<label>定位摘要（選填）<textarea name="positioning_summary" placeholder="這個競品品牌對外主打的定位或標語"></textarea></label>
+<label>我方差異化筆記（選填）<textarea name="differentiation_notes" placeholder="人工觀察到的差異化重點，或之後想強調的方向"></textarea></label>
+<div class="pain-actions">
+<button type="submit" id="competitor-form-submit">新增競品品牌</button>
+<button type="button" id="competitor-form-cancel" class="ghost" hidden>取消編輯</button>
+</div>
+</form>
+
+<hr class="divider">
+<div id="competitor-list"><p class="muted">尚未新增任何競品品牌。</p></div>
+</section>
+
+<section class="panel">
+<div class="step-heading"><b>&#9679;</b><div><h2>AI 差異化定位分析</h2><p>比較我方目前的價位帶與受眾定位跟上方所有競品品牌，每次點擊即時運算、不寫入資料庫，競品異動後重新點擊即可拿到最新結果。</p></div><div class="step-actions"><button type="button" id="competitor-compare-btn" class="ghost small">開始分析 →</button></div></div>
+<div id="competitor-compare-result"><p class="muted">尚未分析。請先新增至少 1 個競品品牌，再點擊「開始分析」。</p></div>
 </section>
 
 </div>
