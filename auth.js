@@ -160,6 +160,40 @@
     renderAuthUI();
   };
 
+  // 供「帳號設定」modal 使用：更新品牌識別（報告白牌化，商業企劃書 P1 項目）。跟顯示名稱
+  // 存在同一個 user_metadata 裡，不新增資料表也不新增後端 API——report-docx 匯出時，伺服器
+  // 端本來就會用 service role 呼叫 Supabase Auth 拿到這個使用者的完整資料（含 user_metadata），
+  // 直接讀出來套用即可。這裡特意把目前 user_metadata 整包展開再覆蓋，避免 updateUser() 的
+  // data 欄位在某些情況下是整包覆蓋而非深層合併，導致意外洗掉 display_name 之類的既有欄位。
+  window.updateBrandSettings = async function (brand) {
+    if (!client || !session) throw new Error('請先登入。');
+    const current = (session.user && session.user.user_metadata) || {};
+    const cleanHex = (v) => {
+      const trimmed = (v || '').trim().replace(/^#/, '');
+      return /^[0-9A-Fa-f]{6}$/.test(trimmed) ? trimmed.toUpperCase() : null;
+    };
+    const payload = {
+      ...current,
+      brand_name: cleanDisplayName(brand.brand_name),
+      brand_color: cleanHex(brand.brand_color),
+      brand_logo_url: (brand.brand_logo_url || '').trim() || null,
+    };
+    const { data, error } = await client.auth.updateUser({ data: payload });
+    if (error) throw new Error(error.message);
+    if (data && data.user) session = { ...session, user: data.user };
+    renderAuthUI();
+  };
+
+  // 供「帳號設定」modal 開啟時預填目前的品牌識別設定。
+  window.currentBrandSettings = function () {
+    const meta = (session && session.user && session.user.user_metadata) || {};
+    return {
+      brand_name: meta.brand_name || '',
+      brand_color: meta.brand_color || '',
+      brand_logo_url: meta.brand_logo_url || '',
+    };
+  };
+
   // 供「帳號設定」modal 的登出按鈕使用，不用重複寫一次 client.auth.signOut()。
   window.signOut = async function () {
     if (!client) return;
