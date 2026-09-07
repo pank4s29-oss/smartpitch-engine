@@ -1063,3 +1063,26 @@ body.no-profile-selected .profile-required-hint { display: block; margin-bottom:
 .quality-alert b, .quality-alert small { display: block; }
 .quality-alert b { color: var(--ink); font-size: 11px; }
 .quality-alert small { margin-top: 2px; color: var(--ink-soft); font-size: 10.5px; line-height: 1.45; }
+
+/* ---------- 客戶總覽比較表（代理商多客戶工作區體驗） ---------- */
+.dashboard-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 4px 0 16px; }
+.dashboard-toolbar input[type="search"] { flex: 1 1 220px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); font-size: 14px; }
+.dashboard-toolbar select { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); font-size: 14px; }
+.dashboard-view-toggle { display: flex; gap: 6px; }
+.dashboard-view-btn.active { background: var(--evidence-bg); border-color: var(--evidence); color: var(--evidence); }
+.client-compare-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-raised); }
+.client-compare-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.client-compare-table th, .client-compare-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.client-compare-table th { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-soft); background: var(--paper); }
+.client-compare-table tbody tr:hover { background: var(--evidence-bg); }
+.client-compare-table td.name-cell { white-space: normal; max-width: 240px; }
+.client-compare-table .num-cell { font-family: var(--font-mono); }
+.client-compare-table .row-actions { display: flex; gap: 6px; white-space: nowrap; }
+
+/* ---------- 品牌識別設定（報告白牌化） ---------- */
+.brand-settings-block { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+.brand-settings-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.brand-settings-row label { flex: 1 1 160px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-soft); }
+.brand-settings-row input { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-raised); color: var(--ink); font-family: var(--font-body); font-size: 14px; }
+.brand-color-input { padding: 2px !important; height: 36px; }
+
