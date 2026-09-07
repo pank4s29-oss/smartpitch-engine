@@ -69,6 +69,10 @@
   const accountSettingsSaveBtn = qs('#account-settings-save');
   const accountSettingsCloseBtn = qs('#account-settings-close');
   const accountSettingsSignoutBtn = qs('#account-settings-signout');
+  const brandSettingsNameInput = qs('#brand-settings-name-input');
+  const brandSettingsColorInput = qs('#brand-settings-color-input');
+  const brandSettingsLogoInput = qs('#brand-settings-logo-input');
+  const brandSettingsSaveBtn = qs('#brand-settings-save');
 
   function openAccountSettings() {
     if (!accountSettingsOverlay) return;
@@ -78,6 +82,12 @@
         ? `登入信箱：${latestAuthDetail.email}` : '';
     }
     if (accountSettingsNameInput) accountSettingsNameInput.value = (latestAuthDetail && latestAuthDetail.displayName) || '';
+    if (typeof window.currentBrandSettings === 'function') {
+      const brand = window.currentBrandSettings();
+      if (brandSettingsNameInput) brandSettingsNameInput.value = brand.brand_name || '';
+      if (brandSettingsColorInput) brandSettingsColorInput.value = brand.brand_color ? '#' + brand.brand_color.replace(/^#/, '') : '#1E4936';
+      if (brandSettingsLogoInput) brandSettingsLogoInput.value = brand.brand_logo_url || '';
+    }
     accountSettingsOverlay.hidden = false;
   }
   function closeAccountSettings() {
@@ -117,6 +127,21 @@
       try { await window.signOut(); closeAccountSettings(); }
       catch (err) { reportStatus('⚠ ' + err.message, true); }
       finally { accountSettingsSignoutBtn.disabled = false; }
+    };
+  }
+
+  if (brandSettingsSaveBtn) {
+    brandSettingsSaveBtn.onclick = async () => {
+      brandSettingsSaveBtn.disabled = true;
+      try {
+        await window.updateBrandSettings({
+          brand_name: brandSettingsNameInput ? brandSettingsNameInput.value : '',
+          brand_color: brandSettingsColorInput ? brandSettingsColorInput.value : '',
+          brand_logo_url: brandSettingsLogoInput ? brandSettingsLogoInput.value : '',
+        });
+        reportStatus('已更新品牌識別，之後匯出的 Word 報告會自動套用。');
+      } catch (err) { reportStatus('⚠ ' + err.message, true); }
+      finally { brandSettingsSaveBtn.disabled = false; }
     };
   }
 })();
