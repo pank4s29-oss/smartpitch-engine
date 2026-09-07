@@ -61,9 +61,9 @@ function constraintsLabel(list) {
   return (list || []).map(c => CONSTRAINT_LABELS[c] || c).join('、') || null;
 }
 
-async function handleGetDocx(res, data) {
+async function handleGetDocx(res, data, brand) {
   try {
-    const buffer = await buildReportDocx(data, '匯出時間：' + new Date().toLocaleString('zh-TW'));
+    const buffer = await buildReportDocx(data, '匯出時間：' + new Date().toLocaleString('zh-TW'), brand);
     const safeName = (data.domain_profile.domain_tag || '受眾報告').replace(/[\\/:*?"<>|]/g, '_');
     if (!Buffer.isBuffer(buffer) || buffer.length < 1000) {
       throw new Error('產生的 Word 文件內容無效或不完整。');
@@ -92,7 +92,13 @@ module.exports = async (req, res) => {
     if (!data) return sendError(res, 404, '找不到對應的產品/服務設定。');
     data.domain_profile.business_constraints_label = constraintsLabel(data.domain_profile.business_constraints);
 
-    if (format === 'docx') return handleGetDocx(res, data);
+    if (format === 'docx') {
+      // 報告白牌化（商業企劃書 P1 項目）：品牌識別存在 Supabase Auth 的 user_metadata，
+      // getUserFromRequest() 打的是 GoTrue 的 /auth/v1/user，回應本來就含 user_metadata，
+      // 這裡直接取用，不用另外查資料庫或多打一次 API。
+      const brand = user.user_metadata || {};
+      return handleGetDocx(res, data, brand);
+    }
     return res.status(200).json(data);
   } catch (err) {
     return sendError(res, 500, err.message);
