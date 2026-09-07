@@ -1492,7 +1492,7 @@ function renderReport(data, meta = {}) {
   container.innerHTML = `<div class="panel report-panel">
     <div class="step-heading">
       <b>&#9679;</b>
-      <div><h2>受眾分析報告</h2>${dp.business_constraints_label ? `<p class="muted">呈現媒介限制：${esc(dp.business_constraints_label)}</p>` : ''}</div>
+      <div><h2>受眾分析報告</h2><p class="muted">Word 匯出會自動套用你在「帳號設定」裡的品牌識別（Logo／配色）。${dp.business_constraints_label ? `　｜　呈現媒介限制：${esc(dp.business_constraints_label)}` : ''}</p></div>
       <div class="step-actions">
         <button type="button" class="ghost small report-export-docx">匯出 Word 文件 →</button>
         <button type="button" class="ghost small report-print">列印／匯出 PDF</button>
@@ -2726,24 +2726,158 @@ function dashboardProfileCardHtml(s) {
     <div class="pain-actions"><button type="button" class="small secondary dc-feedback">語料與痛點 →</button><button type="button" class="small ghost dc-report">產出分析報告</button><button type="button" class="small ghost dc-edit">編輯設定</button></div>
   </article>`;
 }
+
+// ---------------- 客戶總覽比較（代理商多客戶工作區體驗，商業企劃書 P1 項目） ----------------
+// 資料結構本來就支援一個帳號管理多組產品／服務設定（每組設定＝代理商眼中的一個客戶），
+// 這裡純粹是前端強化：不新增 API，只是把總覽頁已經抓回來的 allStats 拿來做搜尋／排序／
+// 表格檢視，方便旗下客戶一多的時候（例如接案投手、代理商）能快速切換與並排比較。
+let dashboardAllStats = [];
+let dashboardViewMode = 'cards';
+
+function dashboardFilterAndSort(allStats) {
+  const keyword = (($('#dashboard-search') || {}).value || '').trim().toLowerCase();
+  const sortKey = (($('#dashboard-sort') || {}).value) || 'created_desc';
+
+  let list = allStats.filter(s => {
+    if (!keyword) return true;
+    const p = s.profile;
+    const haystack = [profileLabel(p), p.domain_tag, ...(audiencesOf(p) || []), p.product_name]
+      .filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(keyword);
+  });
+
+  const progressOf = s => (s.workflow && s.workflow.progress ? s.workflow.progress.percent || 0 : -1);
+  const sorters = {
+    created_desc: (a, b) => new Date(b.profile.created_at || 0) - new Date(a.profile.created_at || 0),
+    progress_desc: (a, b) => progressOf(b) - progressOf(a),
+    progress_asc: (a, b) => progressOf(a) - progressOf(b),
+    pain_desc: (a, b) => b.painTotal - a.painTotal,
+    name_asc: (a, b) => profileLabel(a.profile).localeCompare(profileLabel(b.profile), 'zh-Hant'),
+  };
+  list = list.slice().sort(sorters[sortKey] || sorters.created_desc);
+  return list;
+}
+
+function clientCompareRowHtml(s) {
+  const p = s.profile;
+  const confirmRatio = s.painTotal ? `${s.painConfirmed}／${s.painTotal}` : '0／0';
+  const progress = s.workflow && s.workflow.progress ? `${s.workflow.progress.percent || 0}%` : '—';
+  const reportTotal = s.workflow ? (s.workflow.stats.report_total || 0) : '—';
+  const withPerformance = s.workflow ? (s.workflow.stats.ad_with_performance || 0) : '—';
+  const priceLine = (p.price_range_min !== null && p.price_range_min !== undefined) || (p.price_range_max !== null && p.price_range_max !== undefined)
+    ? priceRangeLabel(p.price_range_min, p.price_range_max, p.price_currency)
+    : priceTierLabel(p);
+  return `<tr data-id="${esc(p.id)}">
+    <td class="name-cell"><strong>${esc(profileLabel(p))}</strong><br><span class="muted">${esc(audiencesOf(p).join('、'))}</span></td>
+    <td>${esc(priceLine)}</td>
+    <td class="num-cell">${esc(confirmRatio)}</td>
+    <td class="num-cell">${esc(String(s.adCopyCount))}</td>
+    <td class="num-cell">${esc(String(withPerformance))}</td>
+    <td class="num-cell">${esc(progress)}</td>
+    <td class="num-cell">${esc(String(reportTotal))}</td>
+    <td class="row-actions">
+      <button type="button" class="small secondary ct-feedback">語料與痛點 →</button>
+      <button type="button" class="small ghost ct-edit">編輯設定</button>
+    </td>
+  </tr>`;
+}
+
+function renderClientCompareTable(list) {
+  const container = $('#dashboard-compare-table');
+  if (!container) return;
+  if (!list.length) {
+    container.innerHTML = '<p class="muted">沒有符合搜尋條件的客戶。</p>';
+    return;
+  }
+  container.innerHTML = `<div class="client-compare-table-wrap"><table class="client-compare-table">
+    <thead><tr>
+      <th>客戶（產品／服務設定）</th><th>價位帶</th><th>痛點（確認／總數）</th>
+      <th>廣告文案</th><th>已有成效素材</th><th>工作流進度</th><th>報告數</th><th>操作</th>
+    </tr></thead>
+    <tbody>${list.map(clientCompareRowHtml).join('')}</tbody>
+  </table></div>`;
+  container.querySelectorAll('tbody tr').forEach(row => {
+    const id = row.dataset.id;
+    const feedbackBtn = row.querySelector('.ct-feedback');
+    if (feedbackBtn) feedbackBtn.onclick = () => selectProfileAndGoTo(id, 'feedback');
+    const editBtn = row.querySelector('.ct-edit');
+    if (editBtn) editBtn.onclick = () => { selectProfileAndGoTo(id, 'profile'); const profile = profilesCache.find(p => p.id === id); if (profile) setProfileFormMode('edit', profile); };
+  });
+}
+
+function renderDashboardCardsView(list) {
+  const gridEl = $('#dashboard-profile-grid');
+  if (!gridEl) return;
+  if (!list.length) {
+    gridEl.innerHTML = '<p class="muted">沒有符合搜尋條件的客戶。</p>';
+    return;
+  }
+  gridEl.innerHTML = list.map(dashboardProfileCardHtml).join('');
+  gridEl.querySelectorAll('.dashboard-card').forEach(card => {
+    const id = card.dataset.id;
+    const s = list.find(x => x.profile.id === id);
+    card.querySelector('.dc-feedback').onclick = () => selectProfileAndGoTo(id, 'feedback');
+    card.querySelector('.dc-edit').onclick = () => { selectProfileAndGoTo(id, 'profile'); const profile = profilesCache.find(p => p.id === id); if (profile) setProfileFormMode('edit', profile); };
+    const reportBtn = card.querySelector('.dc-report');
+    if (reportBtn) reportBtn.onclick = () => { selectProfileAndGoTo(id, 'segments'); setTimeout(() => { const generateBtn = $('#generate-report-btn'); if (generateBtn) generateBtn.click(); }, 80); };
+    const nextBtn = card.querySelector('.dc-next-step');
+    if (nextBtn && s && s.workflow && s.workflow.next_step) nextBtn.onclick = () => selectProfileAndGoTo(id, s.workflow.next_step.page || 'dashboard');
+  });
+}
+
+function applyDashboardView() {
+  const gridEl = $('#dashboard-profile-grid');
+  const tableEl = $('#dashboard-compare-table');
+  const filtered = dashboardFilterAndSort(dashboardAllStats);
+  if (dashboardViewMode === 'table') {
+    if (gridEl) gridEl.hidden = true;
+    if (tableEl) tableEl.hidden = false;
+    renderClientCompareTable(filtered);
+  } else {
+    if (gridEl) gridEl.hidden = false;
+    if (tableEl) tableEl.hidden = true;
+    renderDashboardCardsView(filtered);
+  }
+}
+
+const dashboardSearchInput = $('#dashboard-search');
+if (dashboardSearchInput) dashboardSearchInput.addEventListener('input', applyDashboardView);
+const dashboardSortSelect = $('#dashboard-sort');
+if (dashboardSortSelect) dashboardSortSelect.addEventListener('change', applyDashboardView);
+$$('.dashboard-view-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    dashboardViewMode = btn.dataset.view;
+    $$('.dashboard-view-btn').forEach(b => b.classList.toggle('active', b === btn));
+    applyDashboardView();
+  });
+});
+
 async function renderDashboard() {
   const empty = $('#dashboard-empty');
   const statsEl = $('#dashboard-stats');
   const workflowEl = $('#dashboard-workflow');
+  const toolbarEl = $('#dashboard-toolbar');
   const gridEl = $('#dashboard-profile-grid');
   if (!statsEl || !gridEl) return;
   if (!profilesCache.length) {
     if (empty) empty.hidden = false;
     statsEl.hidden = true;
     if (workflowEl) workflowEl.hidden = true;
+    if (toolbarEl) toolbarEl.hidden = true;
     gridEl.innerHTML = '';
+    const tableEl = $('#dashboard-compare-table');
+    if (tableEl) { tableEl.hidden = true; tableEl.innerHTML = ''; }
     return;
   }
   if (empty) empty.hidden = true;
   statsEl.hidden = false;
+  // 只有客戶數夠多、真的需要搜尋／排序／比較表時才顯示工具列，避免只有 1-2 組設定的
+  // 一般使用者（不是代理商）畫面上多一排用不到的控制項。
+  if (toolbarEl) toolbarEl.hidden = profilesCache.length < 3;
   if (workflowEl) { workflowEl.hidden = false; workflowEl.innerHTML = '<p class="muted">正在彙整工作流進度與資料品質…</p>'; }
   gridEl.innerHTML = '<p class="muted">正在彙整各產品／服務設定的統計資料…</p>';
   const allStats = await Promise.all(profilesCache.map(dashboardProfileStats));
+  dashboardAllStats = allStats;
   const totalPain = allStats.reduce((sum, s) => sum + s.painTotal, 0);
   const totalConfirmed = allStats.reduce((sum, s) => sum + s.painConfirmed, 0);
   const totalAdCopies = allStats.reduce((sum, s) => sum + s.adCopyCount, 0);
@@ -2752,17 +2886,7 @@ async function renderDashboard() {
   statsEl.innerHTML = `<div class="dashboard-stat-card"><span class="num">${profilesCache.length}</span><small>產品／服務設定</small></div><div class="dashboard-stat-card"><span class="num">${totalConfirmed}／${totalPain}</span><small>累積痛點（已確認／總數）</small></div><div class="dashboard-stat-card"><span class="num">${totalAdCopies}</span><small>追蹤中廣告文案</small></div><div class="dashboard-stat-card"><span class="num">${totalPerformance}</span><small>已有成效資料的素材</small></div>`;
   if (workflowEl) workflowEl.innerHTML = `<div class="dashboard-workflow-summary"><div><span class="eyebrow">WORKFLOW HEALTH</span><h2>目前平均進度 ${avgProgress === null ? '—' : avgProgress + '%'}</h2><p class="muted">先完成資料品質提醒，再做下一輪廣告實驗，避免只用單一指標判斷素材好壞。</p></div><div class="dashboard-workflow-actions"><button type="button" class="small secondary" id="dashboard-go-reports">查看報告資料庫 →</button></div></div>`;
   if ($('#dashboard-go-reports')) $('#dashboard-go-reports').onclick = () => window.goToPage && window.goToPage('reports');
-  gridEl.innerHTML = allStats.map(dashboardProfileCardHtml).join('');
-  gridEl.querySelectorAll('.dashboard-card').forEach(card => {
-    const id = card.dataset.id;
-    const s = allStats.find(x => x.profile.id === id);
-    card.querySelector('.dc-feedback').onclick = () => selectProfileAndGoTo(id, 'feedback');
-    card.querySelector('.dc-edit').onclick = () => { selectProfileAndGoTo(id, 'profile'); const profile = profilesCache.find(p => p.id === id); if (profile) setProfileFormMode('edit', profile); };
-    const reportBtn = card.querySelector('.dc-report');
-    if (reportBtn) reportBtn.onclick = () => { selectProfileAndGoTo(id, 'segments'); setTimeout(() => { const generateBtn = $('#generate-report-btn'); if (generateBtn) generateBtn.click(); }, 80); };
-    const nextBtn = card.querySelector('.dc-next-step');
-    if (nextBtn && s.workflow && s.workflow.next_step) nextBtn.onclick = () => selectProfileAndGoTo(id, s.workflow.next_step.page || 'dashboard');
-  });
+  applyDashboardView();
 }
 
 
