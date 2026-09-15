@@ -152,3 +152,51 @@ end $$;
 
 create index if not exists competitor_brands_user_profile_created
   on public.competitor_brands(user_id, domain_profile_id, created_at desc);
+
+-- ============================================================================
+-- Migration（2026-09 補）：補回 audience_segments（潛在／隱藏受眾地圖）的表定義
+-- 這張表先前是直接在 Supabase 主控台建立、沒有同步回這份 schema.sql，導致只看檔案
+-- 會誤以為這個功能沒有對應的表。下面用 IF NOT EXISTS，對「已經存在這張表」的正式環境
+-- 執行不會有影響（不會清空或改動既有資料），純粹是把既有欄位定義補回文件；
+-- 對全新安裝的環境則會真的建立這張表。
+-- ============================================================================
+create table if not exists public.audience_segments (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  domain_profile_id uuid not null references public.domain_profiles(id) on delete cascade,
+  segment_name text not null,
+  description text not null default '',
+  rationale text not null default '',
+  differentiation text not null default '',
+  matched_pain_point_ids jsonb not null default '[]'::jsonb,
+  suggested_formats jsonb not null default '[]'::jsonb,
+  status text not null default 'ai_generated',
+  created_at timestamptz not null default now(),
+  edited_at timestamptz
+);
+
+alter table public.audience_segments enable row level security;
+grant select, insert, update, delete on public.audience_segments to authenticated;
+
+do $$ begin
+  create policy "own audience segments" on public.audience_segments for all to authenticated
+    using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+exception when duplicate_object then null;
+end $$;
+
+create index if not exists audience_segments_user_profile_created
+  on public.audience_segments(user_id, domain_profile_id, created_at desc);
+
+-- 潛在受眾地圖新增第二種反推來源：除了原本「從痛點反推」，現在也能「從競品沒有覆蓋到
+-- 的受眾反推」。source_type 標明這筆族群是怎麼來的；matched_pain_point_ids 因此改為
+-- 選填（competitor_gap 來源通常沒有對應痛點），matched_competitor_ids 記錄這個族群是
+-- 跟哪幾個競品的受眾錯開才反推出來的（用來在畫面上標「與哪個競品區隔」的標籤）。
+alter table public.audience_segments add column if not exists source_type text not null default 'pain_point';
+alter table public.audience_segments add column if not exists matched_competitor_ids jsonb not null default '[]'::jsonb;
+
+do $$ begin
+  alter table public.audience_segments
+    add constraint audience_segments_source_type_valid
+    check (source_type in ('pain_point', 'competitor_gap'));
+exception when duplicate_object then null;
+end $$;
