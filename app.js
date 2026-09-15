@@ -1185,17 +1185,32 @@ if (painImageSubmitBtn) {
 const SEGMENTS_PLACEHOLDER = '<p class="muted">尚未分析。點擊「分析潛在受眾」，系統會根據目前的痛點清單（已駁回者不計入）反推可能的受眾族群。</p>';
 
 let segmentsCache = [];
+let segmentsCompetitorCache = [];
 
 function resetSegmentsPanel() {
   segmentsCache = [];
+  segmentsCompetitorCache = [];
   const el = $('#segments-result');
   if (el) el.innerHTML = SEGMENTS_PLACEHOLDER;
+}
+
+// 潛在受眾卡片如果標明是 competitor_gap 來源，要把 matched_competitor_ids 換成品牌名稱顯示，
+// 所以這裡額外拉一次競品清單——刻意獨立於「競品定位比較」頁面自己的 competitorBrandsCache，
+// 不共用那個全域變數，避免兩個分頁誰先載入、誰的快取先被覆蓋的耦合問題。
+async function loadSegmentsCompetitors() {
+  if (!currentProfileId) { segmentsCompetitorCache = []; return; }
+  try {
+    segmentsCompetitorCache = await api(`/api/competitor-brands?domain_profile_id=${currentProfileId}`);
+  } catch (e) { segmentsCompetitorCache = []; } // 拉不到競品清單不影響受眾地圖本身，最多就是徽章旁邊少了品牌名稱
 }
 
 async function loadSegments() {
   if (!currentProfileId) return;
   try {
-    const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`);
+    const [result] = await Promise.all([
+      api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`),
+      loadSegmentsCompetitors(),
+    ]);
     renderSegmentsList(result.segments || []);
   } catch (e) { setStatus('⚠ ' + e.message, true); }
 }
@@ -1209,11 +1224,20 @@ function segmentCardHtml(seg) {
   }).join('');
   const formats = Array.isArray(seg.suggested_formats) ? seg.suggested_formats : [];
 
+  const isCompetitorGap = seg.source_type === 'competitor_gap';
+  const competitorMap = new Map(segmentsCompetitorCache.map(c => [c.id, c]));
+  const matchedCompetitorIds = Array.isArray(seg.matched_competitor_ids) ? seg.matched_competitor_ids : [];
+  const competitorChips = matchedCompetitorIds.map(id => {
+    const c = competitorMap.get(id);
+    return c ? `<span class="label-chip competitor-chip" style="cursor:default">${esc(c.brand_name)}</span>` : '';
+  }).join('');
+
   return `<article class="pain-card" data-id="${esc(seg.id)}">
     <div class="pain-card-top">
       <div><h3 class="seg-name-display">${esc(seg.segment_name)}</h3><p class="deep-desire seg-desc-display">${esc(seg.description)}</p></div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         ${seg.status === 'edited' ? '<span class="stamp edited">已編輯</span>' : ''}
+        ${isCompetitorGap ? '<span class="stamp competitor-gap">競品缺口</span>' : ''}
         <span class="stamp confirmed">對應 <span class="num">${matchedIds.length}</span> 個痛點</span>
       </div>
     </div>
@@ -1226,6 +1250,7 @@ function segmentCardHtml(seg) {
     ).join('')}</div>` : ''}
     <div class="pain-meta" style="margin-top:12px">這個族群特別在意的痛點：</div>
     <div class="label-chips" style="margin-top:8px">${chips || '<span class="muted">（無對應痛點，可能是原本對應的痛點已被刪除）</span>'}</div>
+    ${competitorChips ? `<div class="pain-meta" style="margin-top:12px">沒有涵蓋到這群人的競品：</div><div class="label-chips" style="margin-top:8px">${competitorChips}</div>` : ''}
     <div class="pain-actions" style="margin-top:12px">
       <button type="button" class="small ghost seg-edit">編輯</button>
       <button type="button" class="small danger ghost seg-delete">刪除</button>
@@ -1314,13 +1339,17 @@ if (segmentsBtn) {
   segmentsBtn.onclick = async () => {
     if (!currentProfileId) return;
     segmentsBtn.disabled = true;
-    setStatus('正在根據目前的痛點清單反推潛在受眾族群…');
+    setStatus('正在根據目前的痛點清單（與已填寫的競品清單）反推潛在受眾族群…');
     try {
-      const result = await api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`, { method: 'POST' });
+      const [result] = await Promise.all([
+        api(`/api/domain-profiles/${currentProfileId}/pain-points/segments`, { method: 'POST' }),
+        loadSegmentsCompetitors(),
+      ]);
       renderSegmentsList(result.segments || [], { note: result.note, message: result.message });
       if (result.segments && result.segments.length) {
         const parts = [];
         if (result.inserted_count) parts.push(`新增 ${result.inserted_count} 個`);
+        if (result.competitor_gap_count) parts.push(`其中 ${result.competitor_gap_count} 個是競品缺口`);
         if (result.skipped_duplicate_count) parts.push(`${result.skipped_duplicate_count} 個與既有族群重複已略過`);
         setStatus(
           `目前共 ${result.segments.length} 個潛在受眾族群${parts.length ? '（' + parts.join('，') + '）' : ''}${result.constraints_applied ? '，已套用呈現媒介限制：' + result.constraints_applied : ''}。`
@@ -1351,16 +1380,22 @@ function reportPainPointCardHtml(p, index) {
   </article>`;
 }
 
-function reportSegmentCardHtml(seg, index, painMap) {
+function reportSegmentCardHtml(seg, index, painMap, competitorMap) {
   const matchedIds = Array.isArray(seg.matched_pain_point_ids) ? seg.matched_pain_point_ids : [];
   const chips = matchedIds.map(id => {
     const p = painMap.get(id);
     return p ? `<span class="label-chip" style="cursor:default">${esc(p.surface_problem)}</span>` : '';
   }).join('');
+  const isCompetitorGap = seg.source_type === 'competitor_gap';
+  const matchedCompetitorIds = Array.isArray(seg.matched_competitor_ids) ? seg.matched_competitor_ids : [];
+  const competitorChips = (competitorMap ? matchedCompetitorIds.map(id => {
+    const c = competitorMap.get(id);
+    return c ? `<span class="label-chip competitor-chip" style="cursor:default">${esc(c.brand_name)}</span>` : '';
+  }).join('') : '');
   const formats = Array.isArray(seg.suggested_formats) ? seg.suggested_formats : [];
   return `<article class="pain-card">
     <div class="pain-card-top">
-      <div><h3>受眾 ${index + 1}：${esc(seg.segment_name)}</h3><p class="deep-desire">${esc(seg.description || '')}</p></div>
+      <div><h3>受眾 ${index + 1}：${esc(seg.segment_name)}${isCompetitorGap ? ' <span class="stamp competitor-gap">競品缺口</span>' : ''}</h3><p class="deep-desire">${esc(seg.description || '')}</p></div>
     </div>
     ${seg.rationale ? `<div class="pain-quote">${esc(seg.rationale)}</div>` : ''}
     ${seg.differentiation ? `<div class="segment-differentiation"><b>與目標受眾的差異：</b>${esc(seg.differentiation)}</div>` : ''}
@@ -1370,6 +1405,7 @@ function reportSegmentCardHtml(seg, index, painMap) {
       `<div style="margin-bottom:6px"><b>${esc(f.format)}</b>${f.reason ? ' — ' + esc(f.reason) : ''}</div>`
     ).join('')}</div>` : ''}
     ${chips ? `<div class="pain-meta" style="margin-top:12px">對應的痛點：</div><div class="label-chips" style="margin-top:8px">${chips}</div>` : ''}
+    ${competitorChips ? `<div class="pain-meta" style="margin-top:12px">沒有涵蓋到這群人的競品：</div><div class="label-chips" style="margin-top:8px">${competitorChips}</div>` : ''}
   </article>`;
 }
 
@@ -1487,7 +1523,9 @@ function renderReport(data, meta = {}) {
   const dp = data.domain_profile || {};
   const points = Array.isArray(data.pain_points) ? data.pain_points : [];
   const segments = Array.isArray(data.segments) ? data.segments : [];
+  const competitors = Array.isArray(data.competitors) ? data.competitors : [];
   const painMap = new Map(points.map(p => [p.id, p]));
+  const competitorMap = new Map(competitors.map(c => [c.id, c]));
 
   container.innerHTML = `<div class="panel report-panel">
     <div class="step-heading">
@@ -1502,7 +1540,7 @@ function renderReport(data, meta = {}) {
     ${points.length ? points.map(reportPainPointCardHtml).join('') : '<p class="muted">此產品/服務設定尚無痛點資料。</p>'}
     <hr class="divider">
     <h3>潛在受眾地圖（共 ${segments.length} 個族群）</h3>
-    ${segments.length ? segments.map((s, i) => reportSegmentCardHtml(s, i, painMap)).join('') : '<p class="muted">此產品/服務設定尚無潛在受眾分析結果。</p>'}
+    ${segments.length ? segments.map((s, i) => reportSegmentCardHtml(s, i, painMap, competitorMap)).join('') : '<p class="muted">此產品/服務設定尚無潛在受眾分析結果。</p>'}
   </div>`;
   container.hidden = false;
   setReportEditorMeta(meta);
