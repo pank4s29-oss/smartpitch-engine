@@ -30,6 +30,11 @@ async function loadReportData(user, profileId) {
   const segments = await restRequest(
     `audience_segments?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=*&order=created_at.asc`
   );
+  // 只拿受眾地圖顯示需要的欄位（id／brand_name）：報告不做競品比較，這裡純粹是為了把
+  // source_type 為 competitor_gap 的族群，其 matched_competitor_ids 換算成品牌名稱顯示。
+  const competitors = await restRequest(
+    `competitor_brands?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=id,brand_name`
+  );
 
   const hasSolution = !!(profile.product_name && profile.solution_description);
   const solution = hasSolution ? {
@@ -48,6 +53,7 @@ async function loadReportData(user, profileId) {
     solution,
     pain_points: painPoints,
     segments,
+    competitors,
   };
 }
 
