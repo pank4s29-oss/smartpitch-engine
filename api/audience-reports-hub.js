@@ -26,12 +26,20 @@ function sanitizeSnapshot(input = {}) {
     description: cleanText(segment.description),
     rationale: cleanText(segment.rationale),
     differentiation: cleanText(segment.differentiation),
+    source_type: segment.source_type === 'competitor_gap' ? 'competitor_gap' : 'pain_point',
     matched_pain_point_ids: cleanArray(segment.matched_pain_point_ids),
+    matched_competitor_ids: cleanArray(segment.matched_competitor_ids),
     suggested_formats: cleanArray(segment.suggested_formats).map(item => ({
       format: cleanText(item && item.format),
       reason: cleanText(item && item.reason),
     })).filter(item => item.format),
   }));
+  // 只保存 id／brand_name：報告快照不需要價位帶、定位摘要這些欄位，這裡純粹是為了
+  // 把 source_type 為 competitor_gap 的族群，其 matched_competitor_ids 換算成品牌名稱顯示。
+  const competitors = cleanArray(input.competitors).map(c => ({
+    id: c.id || null,
+    brand_name: cleanText(c.brand_name),
+  })).filter(c => c.id && c.brand_name);
   return {
     domain_profile: {
       domain_tag: cleanText(profile.domain_tag),
@@ -40,6 +48,7 @@ function sanitizeSnapshot(input = {}) {
     },
     pain_points: painPoints,
     segments,
+    competitors,
   };
 }
 
@@ -50,7 +59,10 @@ async function loadCurrentSnapshot(user, profileId) {
     `audience_pain_points?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&review_status=neq.rejected&select=id,surface_problem,deep_desire,detail&order=created_at.asc`
   );
   const segments = await restRequest(
-    `audience_segments?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=id,segment_name,description,rationale,differentiation,matched_pain_point_ids,suggested_formats&order=created_at.asc`
+    `audience_segments?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=id,segment_name,description,rationale,differentiation,source_type,matched_pain_point_ids,matched_competitor_ids,suggested_formats&order=created_at.asc`
+  );
+  const competitors = await restRequest(
+    `competitor_brands?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=id,brand_name`
   );
   const constraints = Array.isArray(profile.business_constraints) ? profile.business_constraints : [];
   const labels = { no_face: '不露臉', no_short_video: '不使用短影音', text_only: '純文字與圖文排版' };
@@ -62,6 +74,7 @@ async function loadCurrentSnapshot(user, profileId) {
     },
     pain_points: painPoints,
     segments,
+    competitors,
   });
 }
 
