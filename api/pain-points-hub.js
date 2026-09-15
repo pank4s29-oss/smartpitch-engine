@@ -20,7 +20,9 @@ function audienceLine(profile) {
 const SUGGEST_AI_BUDGET_MS = Number(process.env.SUGGEST_AI_BUDGET_MS || 40000);
 const EXTRACT_AI_BUDGET_MS = Number(process.env.EXTRACT_AI_BUDGET_MS || 25000);
 const SEGMENTS_AI_BUDGET_MS = Number(process.env.SEGMENTS_AI_BUDGET_MS || 30000);
+const MERGE_SYNTHESIS_AI_BUDGET_MS = Number(process.env.MERGE_SYNTHESIS_AI_BUDGET_MS || 20000);
 const EXTRACT_MAX_BATCH_SIZE = 20;
+const MAX_SYNTHESIS_EVIDENCE = 30; // 累積佐證語料一多，prompt 會過長，只取最新一批即可反映最新樣貌
 
 const norm = s => (s || '').trim().toLowerCase();
 
@@ -89,6 +91,57 @@ function findExistingMatch(candidate, existingPoints, usedIds) {
     }
   }
   return best;
+}
+
+// ── 合併後自動整合 detail ────────────────────────────────────────────────
+// 問題：合併邏輯原本只更新 evidence_source／confidence_score，detail 永遠停留在
+// 這個痛點「第一次被萃取出來那一批（最多 EXTRACT_MAX_BATCH_SIZE 筆）」的樣子——
+// 即使之後又合併進更多筆語料佐證，detail 內容也完全不會反映新證據，導致使用者感覺
+// 「分析結果跟自己手動輸入的表面/深層問題差不多，看不出語料整合的效果」。
+// 這裡在每次合併有新證據時，重新抓出「這個痛點目前累積的全部佐證語料原文」，
+// 讓 AI 重新整合出一份涵蓋全部語料的 detail，取代舊的。
+// 只在 review_status 仍是 unreviewed 時呼叫（呼叫端已篩選），已經被使用者確認／編輯過的
+// 痛點不會被自動覆蓋——這點沿用原本合併邏輯「尊重使用者判斷」的精神，只是把保護範圍
+// 從「detail 完全不會變」收斂成「detail 只有在使用者還沒看過之前才會被自動更新」。
+async function synthesizeMergedDetail(profile, existingPoint, mergedEvidence, feedbackTextById) {
+  const evidenceList = mergedEvidence
+    .map(e => ({ id: e.raw_customer_feedback_id, text: feedbackTextById.get(e.raw_customer_feedback_id) }))
+    .filter(e => e.text);
+  if (!evidenceList.length) return null;
+  const sample = evidenceList.slice(-MAX_SYNTHESIS_EVIDENCE);
+
+  const system = `你是市場洞察分析師，專長是從一批「已確認屬於同一個痛點」的真實顧客語料中，整合出一份完整的深度分析，
+而不是只根據其中一兩筆語料下結論。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
+規則：
+1. detail 是給使用者看的完整陳述（150-350 字），必須整合下方「全部」語料呈現出的共同模式，不能只根據其中一兩筆。
+2. 內容至少涵蓋：①這個痛點通常在什麼情境或時間點出現、②語料中透露出的成因、③造成的實際困擾或後果（具體，不要空泛）、
+   ④語料中有沒有透露出使用者曾嘗試過的因應方式、效果如何。若某一項在語料中資訊不足，可以省略，但整體仍需具體。
+3. 若不同語料在強度、情境或成因上有明顯差異（例如一部分人是因為 A 原因、另一部分是因為 B 原因），要點出這種差異，
+   不要把所有語料強行講成完全一樣的情況。
+4. 只能根據下方語料撰寫，不可額外腦補語料沒提到的細節。
+5. 不要重新定義這個痛點是什麼——表層問題與深層渴望已經確定，你只需要重新整合「detail」這個欄位。
+${TW_LOCALE_RULE}
+${PLAIN_LANGUAGE_RULE}`;
+
+  const prompt = `【領域】${profile.domain_tag}
+【目標受眾】${audienceLine(profile)}
+【已確定的痛點】表層問題：${existingPoint.surface_problem}／深層渴望：${existingPoint.deep_desire}
+
+以下是目前累積、判定屬於這個痛點的全部語料（共 ${sample.length} 筆，編號從 0 開始）：
+${sample.map((e, i) => `[${i}] ${e.text.slice(0, 800)}`).join('\n')}
+
+請針對這個痛點，輸出整合過後的 detail：
+{"detail":"..."}`;
+
+  try {
+    const raw = await call({ system, prompt, maxTokens: 900, budgetMs: MERGE_SYNTHESIS_AI_BUDGET_MS });
+    const parsed = parseJSON(raw);
+    return parsed && parsed.detail ? parsed.detail : null;
+  } catch (err) {
+    // 整合失敗不能讓整個萃取流程跟著失敗——新證據還是要正常合併進去，只是這次 detail
+    // 沒更新，下次再有新語料合併進來時還會重新嘗試一次。
+    return null;
+  }
 }
 
 async function handleList(req, res, user, profileId) {
@@ -383,6 +436,22 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
       ? await restRequest('audience_pain_points', { method: 'POST', prefer: 'return=representation', body: insertRows })
       : [];
 
+    // 哪些合併需要重新整合 detail：要有新證據，而且使用者還沒看過（unreviewed）——
+    // 已經被確認或編輯過的痛點維持原邏輯，不自動覆蓋文字內容。
+    const toResynthesize = toMerge.filter(m => m.hasNewEvidence && m.existing.review_status === 'unreviewed');
+    let feedbackTextById = new Map();
+    if (toResynthesize.length) {
+      // 先把所有需要重新整合的痛點會用到的語料原文一次抓齊，避免每個痛點各自打一次 REST 查詢。
+      const neededIds = new Set();
+      toResynthesize.forEach(m => m.mergedEvidence.forEach(e => neededIds.add(e.raw_customer_feedback_id)));
+      const neededIdFilter = [...neededIds].map(id => `"${id}"`).join(',');
+      const evidenceRows = await restRequest(
+        `raw_customer_feedback?id=in.(${neededIdFilter})&user_id=eq.${user.id}&domain_profile_id=eq.${profileId}&select=id,raw_text`
+      );
+      evidenceRows.forEach(r => feedbackTextById.set(r.id, r.raw_text));
+    }
+
+    let resynthesizedCount = 0;
     const savedMerged = [];
     for (const m of toMerge) {
       if (!m.hasNewEvidence) { savedMerged.push(m.existing); continue; } // 沒有新證據就不用多打一次 PATCH
@@ -390,8 +459,15 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
         evidence_source: m.mergedEvidence,
         confidence_score: Math.min(1, m.mergedEvidence.length / totalFeedbackCount),
       };
-      // 已經被使用者確認／編輯過的痛點，尊重使用者的判斷，不覆蓋文字內容，
-      // 只補上新的證據並重新計算置信度。
+      // 已經被使用者確認／編輯過的痛點，尊重使用者的判斷，不覆蓋文字內容，只補上新的
+      // 證據並重新計算置信度；還沒被看過的痛點則重新整合 detail，讓內容反映全部累積證據。
+      if (m.existing.review_status === 'unreviewed') {
+        const synthesized = await synthesizeMergedDetail(profile, m.existing, m.mergedEvidence, feedbackTextById);
+        if (synthesized) {
+          patch.detail = synthesized;
+          resynthesizedCount++;
+        }
+      }
       const [updated] = await restRequest(
         `audience_pain_points?id=eq.${m.existing.id}&user_id=eq.${user.id}`,
         { method: 'PATCH', prefer: 'return=representation', body: patch }
@@ -418,10 +494,17 @@ ${feedbacks.map((f, i) => `[${i}] ${f.raw_text.slice(0, 800)}`).join('\n')}
     );
 
     const message = toMerge.length
-      ? `已萃取 ${candidates.length} 筆痛點：${savedNew.length} 筆為新痛點，另外 ${toMerge.length} 筆與既有痛點高度相似，已合併證據並更新置信度（不會出現重複的痛點卡片）。`
+      ? `已萃取 ${candidates.length} 筆痛點：${savedNew.length} 筆為新痛點，另外 ${toMerge.length} 筆與既有痛點高度相似，已合併證據並更新置信度（不會出現重複的痛點卡片）` +
+        `，其中 ${resynthesizedCount} 筆已根據累積的全部佐證語料重新整合詳細分析。`
       : `已萃取 ${savedNew.length} 筆有語料佐證的痛點。`;
 
-    return res.status(200).json({ pain_points: allSaved, created_count: savedNew.length, merged_count: toMerge.length, message });
+    return res.status(200).json({
+      pain_points: allSaved,
+      created_count: savedNew.length,
+      merged_count: toMerge.length,
+      resynthesized_count: resynthesizedCount,
+      message,
+    });
   } catch (err) {
     return sendError(res, 500, err.message);
   }
