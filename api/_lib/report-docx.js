@@ -151,8 +151,10 @@ function painPointCard(D, point, index) {
   return card(D, content);
 }
 
-function segmentCard(D, segment, index, painPointMap, accent) {
-  const content = [cardTitle(D, `受眾 ${index + 1}：${segment.segment_name || '未命名族群'}`)];
+function segmentCard(D, segment, index, painPointMap, competitorMap, accent) {
+  const isCompetitorGap = segment.source_type === 'competitor_gap';
+  const title = `受眾 ${index + 1}：${segment.segment_name || '未命名族群'}${isCompetitorGap ? '（競品缺口）' : ''}`;
+  const content = [cardTitle(D, title)];
   if (segment.description) content.push(paragraph(D, segment.description, { after: 90 }));
   if (segment.rationale) content.push(paragraph(D, `為什麼這些痛點特別打中他們：${segment.rationale}`, { color: '5B6862', after: 90 }));
   if (segment.differentiation) content.push(paragraph(D, `與目標受眾的差異：${segment.differentiation}`, { color: '5B6862', after: 90 }));
@@ -160,6 +162,10 @@ function segmentCard(D, segment, index, painPointMap, accent) {
   const ids = Array.isArray(segment.matched_pain_point_ids) ? segment.matched_pain_point_ids : [];
   const matched = ids.map(id => painPointMap.get(id)).filter(Boolean);
   if (matched.length) content.push(paragraph(D, `對應的痛點：${matched.join('、')}`, { color: accent || '2F6F3E', after: 90 }));
+
+  const competitorIds = Array.isArray(segment.matched_competitor_ids) ? segment.matched_competitor_ids : [];
+  const matchedCompetitors = competitorMap ? competitorIds.map(id => competitorMap.get(id)).filter(Boolean) : [];
+  if (matchedCompetitors.length) content.push(paragraph(D, `沒有涵蓋到這群人的競品：${matchedCompetitors.join('、')}`, { color: 'B4622A', after: 90 }));
 
   const formats = Array.isArray(segment.suggested_formats) ? segment.suggested_formats : [];
   if (formats.length) {
@@ -178,7 +184,9 @@ async function buildReportDocx(data, meta, brand = {}) {
   const audiences = Array.isArray(profile.audiences) && profile.audiences.length ? profile.audiences.join('、') : '未設定';
   const painPoints = Array.isArray(data.pain_points) ? data.pain_points : [];
   const segments = Array.isArray(data.segments) ? data.segments : [];
+  const competitors = Array.isArray(data.competitors) ? data.competitors : [];
   const painPointMap = new Map(painPoints.map(point => [point.id, point.surface_problem]));
+  const competitorMap = new Map(competitors.map(c => [c.id, c.brand_name]));
 
   // 品牌識別：主色沒填或格式不對就用系統預設色，Logo 抓不到就整段跳過，
   // 兩者互相獨立，不會因為其中一項失敗就連帶影響另一項。
@@ -228,7 +236,7 @@ async function buildReportDocx(data, meta, brand = {}) {
     children.push(paragraph(D, '目前尚無潛在受眾分析結果。', { color: '8A948F' }));
   } else {
     segments.forEach((segment, index) => {
-      children.push(segmentCard(D, segment, index, painPointMap, accent));
+      children.push(segmentCard(D, segment, index, painPointMap, competitorMap, accent));
       children.push(paragraph(D, '', { after: 100 }));
     });
   }
