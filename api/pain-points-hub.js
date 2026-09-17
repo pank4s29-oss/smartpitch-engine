@@ -24,6 +24,12 @@ const MERGE_SYNTHESIS_AI_BUDGET_MS = Number(process.env.MERGE_SYNTHESIS_AI_BUDGE
 const EXTRACT_MAX_BATCH_SIZE = 20;
 const MAX_SYNTHESIS_EVIDENCE = 30; // 累積佐證語料一多，prompt 會過長，只取最新一批即可反映最新樣貌
 const MAX_COMPETITORS_FOR_SEGMENTS = 12; // 跟 domain-profiles/index.js 的 MAX_COMPETITORS_FOR_COMPARE 對齊，避免競品清單塞爆 prompt
+// 競品缺口分析是「加碼」的第二次 AI 呼叫，時間預算必須從函式總時限裡「借」，不能無條件疊加：
+// PAIN_POINTS_FUNCTION_MAX_DURATION_MS 要跟 vercel.json 裡 api/pain-points-hub.js 的 maxDuration 對齊。
+const PAIN_POINTS_FUNCTION_MAX_DURATION_MS = 45000;
+const COMPETITOR_GAP_AI_BUDGET_MS = Number(process.env.COMPETITOR_GAP_AI_BUDGET_MS || 15000);
+const MIN_COMPETITOR_GAP_BUDGET_MS = 6000; // 剩餘時間低於這個門檻，連試都不試，直接跳過（試了也大概率逾時，白白多等）
+const COMPETITOR_GAP_SAFETY_MARGIN_MS = 6000; // 留給主分析結果的資料庫寫入與組裝回應
 
 const norm = s => (s || '').trim().toLowerCase();
 
@@ -538,6 +544,7 @@ async function handleSegmentsList(req, res, user, profileId) {
 }
 
 async function handleSegmentsAnalyze(req, res, user, profileId) {
+  const requestStart = Date.now();
   try {
     const [profile] = await restRequest(`domain_profiles?id=eq.${profileId}&user_id=eq.${user.id}&select=*`);
     if (!profile) return sendError(res, 404, '找不到對應的產品/服務設定。');
@@ -553,8 +560,8 @@ async function handleSegmentsAnalyze(req, res, user, profileId) {
     }
 
     // 潛在受眾地圖的第二種反推來源：競品定位比較（domain-profiles/index.js 的 competitor_brands）。
-    // 沒有新增任何競品品牌時，這裡就是空陣列，底下的 prompt 完全不會提到競品，維持原本
-    // 「只靠痛點也能跑」的行為，不強迫使用者一定要先填競品才能分析受眾。
+    // 沒有新增任何競品品牌時，這裡就是空陣列，完全不會多打一次 AI 呼叫，維持原本
+    // 「只靠痛點也能跑」的行為與速度，不強迫使用者一定要先填競品才能分析受眾。
     const competitors = await restRequest(
       `competitor_brands?domain_profile_id=eq.${profileId}&user_id=eq.${user.id}&select=id,brand_name,target_audience&order=created_at.asc`
     );
@@ -569,6 +576,22 @@ async function handleSegmentsAnalyze(req, res, user, profileId) {
       ? profile.business_constraints.map(c => CONSTRAINT_LABELS[c] || c).join('、')
       : '';
 
+    // 安全網：即使 Prompt 已明確要求不可與目標受眾重疊，仍用簡單的正規化字串比對擋掉
+    // 明顯只是把 audience 原文換句話說（去除空白／標點後幾乎完全相同或互相包含）的族群，
+    // 避免「潛在受眾」清單裡出現一個其實就是原本受眾的重複項。兩支 AI 呼叫（主分析／競品缺口）
+    // 共用同一套判斷，所以獨立成函式放在兩者之前。
+    const normalize = s => (s || '').replace(/[\s、，。！？~～\-()（）「」『』]/g, '').toLowerCase();
+    const audienceNorms = (Array.isArray(profile.audiences) ? profile.audiences : [profile.audience])
+      .map(normalize).filter(Boolean);
+    const isDuplicateOfAudience = text => {
+      const t = normalize(text);
+      if (!t || !audienceNorms.length) return false;
+      return audienceNorms.some(an => t === an || t.includes(an) || an.includes(t));
+    };
+
+    // ── 第一支呼叫：主分析（跟加入競品缺口功能之前完全一樣的 prompt／預算）──────────────
+    // 刻意保持跟原本一樣，不因為使用者填了競品就跟著變複雜、變慢——這是這次要修的重點：
+    // 之前把競品規則、競品清單全部塞進同一個 prompt，讓每次分析都變重，反而容易逾時。
     const system = `你是受眾區隔顧問，同時也是數位產品規劃顧問。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
 任務：從一份受眾痛點清單，反推出可能存在的「潛在／隱藏受眾」——也就是表面上都屬於同一個目標受眾，
 但實際上動機、情境或急迫程度不同的細分族群。每個痛點可以同時屬於多個族群，並針對每個族群建議適合的
@@ -585,52 +608,26 @@ async function handleSegmentsAnalyze(req, res, user, profileId) {
 6. suggested_formats：針對這個族群，建議 1-3 種適合的「數位資產形式」（例如：自動化線上課程、SOP／檢核表模板、
    高單價一對一顧問方案、訂閱制社群、圖解懶人包、純文字電子報等），並各附一句話說明為什麼適合這個族群的處境
    （例如「沒時間但有預算，適合高單價一對一」）。${constraintsLine ? `\n7. 這個使用者對呈現媒介設有限制：${constraintsLine}，建議的形式必須能在這些限制下實現，不可建議違反限制的形式（例如限制「不露臉」或「不使用短影音」時，不可建議需要出鏡或短影音的形式）。` : ''}
-每個族群都要標明 source_type：
-- "pain_point"：單純從痛點清單反推出來的族群（多數族群屬於這一類）。${hasCompetitors ? `
-- "competitor_gap"：額外再找出最多 1-2 個「痛點清單裡有具體佐證、但下方競品清單裡沒有任何一個品牌的主打受眾涵蓋到」的族群。
-  這類族群的 differentiation 必須明確指出是跟哪個編號的競品主打受眾錯開（例如「競品 [1] 主打的是...，但這群人的處境是...，
-  沒有任何競品鎖定他們」），matched_competitor_indices 填入下方競品清單中「明顯沒有涵蓋到這群人」的品牌編號，
-  不可捏造清單中不存在的編號；找不到明顯缺口時，這一類可以回傳 0 個，不要為了湊數硬掰。` : ''}
 ${PLAIN_LANGUAGE_RULE}`;
-
-    const competitorSection = hasCompetitors
-      ? `\n\n【競品清單】（編號從 0 開始，共 ${competitorList.length} 個，用於找出 competitor_gap 族群）\n${competitorList.map((c, i) => `[${i}] 品牌：${c.brand_name}／主打受眾：${c.target_audience}`).join('\n')}`
-      : '';
 
     const prompt = `【領域】${profile.domain_tag}
 【目前設定的目標受眾（反推出的族群不可與此重複或僅為換句話說）】${audienceLine(profile)}
 【呈現媒介限制】${constraintsLine || '無特別限制'}
 
 【痛點清單】（編號從 0 開始）
-${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴望：${p.deep_desire}`).join('\n')}${competitorSection}
+${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴望：${p.deep_desire}`).join('\n')}
 
 請輸出：
-{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境與典型情境（2-4句，具體描述，不要空泛）","rationale":"為什麼這些痛點特別打中他們（2-3句）","differentiation":"跟目前目標受眾『${audienceLine(profile)}』具體差在哪裡（1-2句）","matched_indices":[0,2],"suggested_formats":[{"format":"...","reason":"..."}],"source_type":"pain_point"${hasCompetitors ? `,"matched_competitor_indices":[1]` : ''}}],"note":"若整體區隔度不高，說明原因（選填）"}`;
+{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境與典型情境（2-4句，具體描述，不要空泛）","rationale":"為什麼這些痛點特別打中他們（2-3句）","differentiation":"跟目前目標受眾『${audienceLine(profile)}』具體差在哪裡（1-2句）","matched_indices":[0,2],"suggested_formats":[{"format":"...","reason":"..."}]}],"note":"若整體區隔度不高，說明原因（選填）"}`;
 
     const raw = await call({ system, prompt, maxTokens: 1800, budgetMs: SEGMENTS_AI_BUDGET_MS });
     const parsed = parseJSON(raw);
     const rawSegments = parsed && Array.isArray(parsed.segments) ? parsed.segments : [];
 
-    // 安全網：即使 Prompt 已明確要求不可與目標受眾重疊，仍用簡單的正規化字串比對擋掉
-    // 明顯只是把 audience 原文換句話說（去除空白／標點後幾乎完全相同或互相包含）的族群，
-    // 避免「潛在受眾」清單裡出現一個其實就是原本受眾的重複項。
-    const normalize = s => (s || '').replace(/[\s、，。！？~～\-()（）「」『』]/g, '').toLowerCase();
-    const audienceNorms = (Array.isArray(profile.audiences) ? profile.audiences : [profile.audience])
-      .map(normalize).filter(Boolean);
-    const isDuplicateOfAudience = text => {
-      const t = normalize(text);
-      if (!t || !audienceNorms.length) return false;
-      return audienceNorms.some(an => t === an || t.includes(an) || an.includes(t));
-    };
-
-    const candidates = rawSegments
+    const painCandidates = rawSegments
       .filter(s => !isDuplicateOfAudience(s.segment_name) && !isDuplicateOfAudience(s.description))
       .map(s => {
-        const sourceType = hasCompetitors && s.source_type === 'competitor_gap' ? 'competitor_gap' : 'pain_point';
         const indices = Array.isArray(s.matched_indices) ? s.matched_indices.filter(i => points[i]) : [];
-        const competitorIndices = sourceType === 'competitor_gap' && Array.isArray(s.matched_competitor_indices)
-          ? s.matched_competitor_indices.filter(i => competitorList[i])
-          : [];
         const suggestedFormats = Array.isArray(s.suggested_formats)
           ? s.suggested_formats.filter(f => f && f.format).map(f => ({ format: f.format, reason: f.reason || '' })).slice(0, 3)
           : [];
@@ -639,16 +636,85 @@ ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴�
           description: s.description || '',
           rationale: s.rationale || '',
           differentiation: s.differentiation || '',
-          source_type: sourceType,
+          source_type: 'pain_point',
           matched_pain_point_ids: indices.map(i => points[i].id),
-          matched_competitor_ids: competitorIndices.map(i => competitorList[i].id),
+          matched_competitor_ids: [],
           suggested_formats: suggestedFormats,
         };
       })
-      // pain_point 來源沿用原本規則：一定要有痛點佐證才寫入。
-      // competitor_gap 來源：痛點佐證或競品缺口任一有內容即可（見上方 prompt，實務上多半兩者都有，
-      // 但把條件放寬一點是為了不要因為 AI 剛好漏填某一邊索引就整筆被擋掉）。
-      .filter(s => s.matched_pain_point_ids.length || (s.source_type === 'competitor_gap' && s.matched_competitor_ids.length));
+      .filter(s => s.matched_pain_point_ids.length);
+
+    // ── 第二支呼叫：競品缺口分析，「加碼」的、可以失敗的獨立呼叫 ──────────────────────
+    // 只在有競品清單時才會發生；時間預算從函式總時限裡現算現借，主分析已經花了多少時間
+    // 就少借多少，逼近上限時直接跳過不試（試了也大概率逾時，只是白白多等）。就算這支呼叫
+    // 逾時或失敗，也只是少了「競品缺口」這幾個額外族群，不會讓整份潛在受眾地圖的分析失敗。
+    let gapCandidates = [];
+    let competitorGapNote = null;
+    if (hasCompetitors) {
+      const elapsedMs = Date.now() - requestStart;
+      const remainingBudget = PAIN_POINTS_FUNCTION_MAX_DURATION_MS - elapsedMs - COMPETITOR_GAP_SAFETY_MARGIN_MS;
+      const gapBudget = Math.min(COMPETITOR_GAP_AI_BUDGET_MS, remainingBudget);
+      if (gapBudget < MIN_COMPETITOR_GAP_BUDGET_MS) {
+        competitorGapNote = '主分析耗時已接近本次請求的時間上限，這次先略過競品缺口分析，可以再按一次「分析潛在受眾」單獨嘗試。';
+      } else {
+        try {
+          const gapSystem = `你是受眾區隔顧問，任務很單一：從下方「已知有真實佐證的痛點清單」中，找出「有具體佐證、但下方競品清單裡
+沒有任何一個品牌的主打受眾涵蓋到」的受眾缺口。只能輸出合法 JSON，不能有任何前後說明文字或 Markdown 圍籬。
+規則：
+1. 最多找 2 個缺口族群，找不到明顯缺口就回傳空陣列，不要為了湊數硬掰。
+2. 每個缺口族群都必須比「目前設定的目標受眾」更具體，不能只是換句話說。
+3. matched_indices／matched_competitor_indices 只能填入下方清單中實際存在的編號，不可捏造。
+4. differentiation 必須明確指出是跟哪個編號的競品主打受眾錯開，具體講出差在哪個面向，不能只寫「更精準」這種空泛描述。
+5. suggested_formats：針對這個族群，建議 1-3 種適合的「數位資產形式」，並各附一句話說明為什麼適合。${constraintsLine ? `這個使用者對呈現媒介設有限制：${constraintsLine}，建議的形式必須能在這些限制下實現。` : ''}
+${PLAIN_LANGUAGE_RULE}`;
+
+          const gapPrompt = `【領域】${profile.domain_tag}
+【目前設定的目標受眾】${audienceLine(profile)}
+
+【痛點清單】（編號從 0 開始）
+${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴望：${p.deep_desire}`).join('\n')}
+
+【競品清單】（編號從 0 開始，共 ${competitorList.length} 個）
+${competitorList.map((c, i) => `[${i}] 品牌：${c.brand_name}／主打受眾：${c.target_audience}`).join('\n')}
+
+請輸出：
+{"segments":[{"segment_name":"...","description":"這個族群是誰、他們的處境與典型情境（2-4句）","rationale":"為什麼這些痛點特別打中他們（2-3句）","differentiation":"跟競品 [編號] 主打受眾具體差在哪裡（1-2句，必須指名編號）","matched_indices":[0],"matched_competitor_indices":[1],"suggested_formats":[{"format":"...","reason":"..."}]}]}`;
+
+          const gapRaw = await call({ system: gapSystem, prompt: gapPrompt, maxTokens: 700, budgetMs: gapBudget });
+          const gapParsed = parseJSON(gapRaw);
+          const rawGapSegments = gapParsed && Array.isArray(gapParsed.segments) ? gapParsed.segments : [];
+
+          gapCandidates = rawGapSegments
+            .filter(s => !isDuplicateOfAudience(s.segment_name) && !isDuplicateOfAudience(s.description))
+            .map(s => {
+              const indices = Array.isArray(s.matched_indices) ? s.matched_indices.filter(i => points[i]) : [];
+              const competitorIndices = Array.isArray(s.matched_competitor_indices)
+                ? s.matched_competitor_indices.filter(i => competitorList[i])
+                : [];
+              const suggestedFormats = Array.isArray(s.suggested_formats)
+                ? s.suggested_formats.filter(f => f && f.format).map(f => ({ format: f.format, reason: f.reason || '' })).slice(0, 3)
+                : [];
+              return {
+                segment_name: s.segment_name || '未命名族群',
+                description: s.description || '',
+                rationale: s.rationale || '',
+                differentiation: s.differentiation || '',
+                source_type: 'competitor_gap',
+                matched_pain_point_ids: indices.map(i => points[i].id),
+                matched_competitor_ids: competitorIndices.map(i => competitorList[i].id),
+                suggested_formats: suggestedFormats,
+              };
+            })
+            .filter(s => s.matched_pain_point_ids.length || s.matched_competitor_ids.length);
+        } catch (err) {
+          // 競品缺口分析逾時或失敗不能讓整支請求跟著失敗——主分析的結果照常回傳，
+          // 只是這次沒有競品缺口的加分結果，使用者可以再點一次重試。
+          competitorGapNote = `競品缺口分析逾時或失敗（${err.message}），本次結果只包含從痛點反推的族群，可以再按一次「分析潛在受眾」重試。`;
+        }
+      }
+    }
+
+    const candidates = [...painCandidates, ...gapCandidates];
 
     // 跟既有已存下來的族群比對名稱（正規化後），完全相同就視為重複，略過不重複寫入——
     // 每次按「分析潛在受眾」都是把新一輪分析結果併入既有清單，而不是整批覆蓋掉使用者
@@ -689,6 +755,7 @@ ${points.map((p, i) => `[${i}] 表層問題：${p.surface_problem}／深層渴�
     return res.status(200).json({
       segments: allSegments,
       note: parsed && parsed.note,
+      competitor_gap_note: competitorGapNote,
       based_on_count: points.length,
       based_on_competitor_count: competitorList.length,
       constraints_applied: constraintsLine || null,
