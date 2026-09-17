@@ -1352,10 +1352,10 @@ if (segmentsBtn) {
         if (result.competitor_gap_count) parts.push(`其中 ${result.competitor_gap_count} 個是競品缺口`);
         if (result.skipped_duplicate_count) parts.push(`${result.skipped_duplicate_count} 個與既有族群重複已略過`);
         setStatus(
-          `目前共 ${result.segments.length} 個潛在受眾族群${parts.length ? '（' + parts.join('，') + '）' : ''}${result.constraints_applied ? '，已套用呈現媒介限制：' + result.constraints_applied : ''}。`
+          `目前共 ${result.segments.length} 個潛在受眾族群${parts.length ? '（' + parts.join('，') + '）' : ''}${result.constraints_applied ? '，已套用呈現媒介限制：' + result.constraints_applied : ''}。${result.competitor_gap_note ? ' ⚠ ' + result.competitor_gap_note : ''}`
         );
       } else {
-        setStatus(result.message || '尚未反推出有區別度的受眾族群。');
+        setStatus((result.message || '尚未反推出有區別度的受眾族群。') + (result.competitor_gap_note ? ' ⚠ ' + result.competitor_gap_note : ''));
       }
     } catch (err) { setStatus('⚠ ' + err.message, true); }
     finally { segmentsBtn.disabled = false; }
